@@ -1,0 +1,92 @@
+# GoReleaser configuration for aigate
+# See https://goreleaser.com/customization/ for more details
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      - 386
+      - arm
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.BuildTime={{.Date}}
+      - -X main.GitCommit={{.FullCommit}}
+    binary: aigate-{{.Os}}-{{.Arch}}
+    ignore:
+      - goos: windows
+        goarch: arm
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "aigate-{{.Os}}-{{.Arch}}"
+    files:
+      - README.md
+      - LICENSE
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+
+release:
+  github:
+    owner: AxeForging
+    name: aigate
+  draft: false
+  prerelease: auto
+  name_template: "Release {{ .Tag }}"
+  footer: |
+    ## Installation
+
+    ### Linux/macOS (AMD64)
+    ```bash
+    curl -L https://github.com/AxeForging/aigate/releases/download/{{ .Tag }}/aigate-linux-amd64.tar.gz -o aigate-linux-amd64.tar.gz
+    tar -xvf aigate-linux-amd64.tar.gz aigate-linux-amd64
+    chmod +x aigate-linux-amd64
+    sudo mv aigate-linux-amd64 /usr/local/bin/aigate
+    ```
+
+    ### Linux/macOS (ARM64)
+    ```bash
+    curl -L https://github.com/AxeForging/aigate/releases/download/{{ .Tag }}/aigate-linux-arm64.tar.gz -o aigate-linux-arm64.tar.gz
+    tar -xvf aigate-linux-arm64.tar.gz aigate-linux-arm64
+    chmod +x aigate-linux-arm64
+    sudo mv aigate-linux-arm64 /usr/local/bin/aigate
+    ```
+
+    ### Windows
+    ```powershell
+    Invoke-WebRequest -Uri https://github.com/AxeForging/aigate/releases/download/{{ .Tag }}/aigate-windows-amd64.zip -OutFile aigate-windows-amd64.zip
+    Expand-Archive -Path aigate-windows-amd64.zip -DestinationPath .
+    Move-Item -Path aigate-windows-amd64/aigate-windows-amd64.exe -Destination aigate.exe
+    ```
+
+    ### From Source
+    ```bash
+    go install github.com/AxeForging/aigate@{{ .Tag }}
+    ```
