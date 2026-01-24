@@ -5,7 +5,6 @@ package services
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/AxeForging/aigate/domain"
