@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/AxeForging/aigate/domain"
 	"github.com/AxeForging/aigate/helpers"
@@ -70,10 +71,23 @@ func (s *RuleService) ListRules(cfg *domain.Config) []domain.Rule {
 	return rules
 }
 
-func (s *RuleService) IsCommandBlocked(cfg *domain.Config, cmd string) bool {
+func (s *RuleService) IsCommandBlocked(cfg *domain.Config, cmd string, args []string) bool {
 	for _, denied := range cfg.DenyExec {
-		if denied == cmd {
-			return true
+		parts := strings.SplitN(denied, " ", 2)
+		if len(parts) == 2 {
+			// Subcommand rule: "command subcommand"
+			if parts[0] == cmd {
+				for _, arg := range args {
+					if arg == parts[1] {
+						return true
+					}
+				}
+			}
+		} else {
+			// Full command rule
+			if denied == cmd {
+				return true
+			}
 		}
 	}
 	return false

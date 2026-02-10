@@ -74,6 +74,9 @@ aigate deny read .env secrets/ *.pem .aws/
 # Block command execution
 aigate deny exec curl wget nc ssh scp
 
+# Block specific subcommands (allow other uses of the command)
+aigate deny exec "kubectl delete" "kubectl create" "docker rm"
+
 # Restrict network (only allow specific domains)
 aigate deny net --except api.anthropic.com --except api.openai.com
 ```
@@ -85,6 +88,7 @@ Remove restrictions:
 ```sh
 aigate allow read .env          # Remove .env from deny list
 aigate allow exec curl          # Allow curl again
+aigate allow exec "kubectl delete"  # Allow kubectl delete again
 aigate allow net example.com    # Add allowed domain
 ```
 
@@ -140,6 +144,9 @@ deny_exec:
   - "nc"
   - "ssh"
   - "scp"
+  - "kubectl delete"
+  - "kubectl create"
+  - "docker rm"
 allow_net:
   - "api.anthropic.com"
   - "api.openai.com"
