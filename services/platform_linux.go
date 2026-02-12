@@ -4,11 +4,11 @@ package services
 
 import (
 	"bufio"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 
 	"github.com/AxeForging/aigate/domain"
@@ -275,42 +275,70 @@ func parseDNSFromFile(path string) []string {
 }
 
 // runWithNetFilter runs a command in a network-filtered namespace using slirp4netns.
+//
+// Architecture (two-layer unshare):
+//
+//	Outer: unshare --user --map-root-user  (user namespace only, keeps host network)
+//	  ├── Inner: unshare --net --mount --pid --fork  (sandbox, new net ns)
+//	  │     └── sh -c <inner script>   (wait tap0 → iptables → exec cmd)
+//	  └── slirp4netns --configure <inner_PID> tap0  (user ns caps, host network)
+//
+// slirp4netns must run INSIDE the user namespace to have CAP_SYS_ADMIN for
+// setns(CLONE_NEWNET). Launching it from the host fails with EPERM because an
+// unprivileged process lacks CAP_SYS_ADMIN in its own (init) user namespace.
 func (p *LinuxPlatform) runWithNetFilter(profile domain.SandboxProfile, cmd string, args []string) error {
 	dnsServers := getSystemDNS()
-	// Pre-resolve on host for logging only; actual iptables rules are
-	// resolved inside the namespace to avoid CDN/anycast IP mismatches.
-	hostIPs := resolveAllowedIPs(profile.Config.AllowNet)
 	helpers.Log.Info().
 		Strs("allow_net", profile.Config.AllowNet).
-		Strs("host_resolved_ips", hostIPs).
 		Strs("dns_servers", dnsServers).
 		Msg("starting network-filtered sandbox")
 
 	innerScript := buildNetFilterScript(profile.Config.AllowNet, dnsServers, profile, cmd, args)
+	outerScript := buildOrchestrationScript(innerScript)
 
-	sandbox := exec.Command("unshare", "--user", "--map-root-user", "--net",
-		"--mount", "--pid", "--fork", "--", "sh", "-c", innerScript)
-	sandbox.Stdin = os.Stdin
-	sandbox.Stdout = os.Stdout
-	sandbox.Stderr = os.Stderr
-	if err := sandbox.Start(); err != nil {
-		return fmt.Errorf("failed to start sandbox: %w", err)
-	}
+	return p.exec.RunPassthrough("unshare", "--user", "--map-root-user", "--", "sh", "-c", outerScript)
+}
 
-	slirp := exec.Command("slirp4netns", "--configure",
-		strconv.Itoa(sandbox.Process.Pid), "tap0")
-	slirp.Stderr = os.Stderr
-	if err := slirp.Start(); err != nil {
-		sandbox.Process.Kill()
-		sandbox.Wait()
-		return fmt.Errorf("failed to start slirp4netns: %w", err)
-	}
-	defer func() {
-		slirp.Process.Kill()
-		slirp.Wait()
-	}()
+// buildOrchestrationScript wraps the inner sandbox script with the two-process
+// orchestration that runs inside the user namespace.
+//
+// It backgrounds the sandbox (in a new net namespace) while preserving stdin
+// via fd 3, then launches slirp4netns in the foreground (user ns + host network)
+// to provide connectivity.
+func buildOrchestrationScript(innerScript string) string {
+	encoded := base64.StdEncoding.EncodeToString([]byte(innerScript))
 
-	return sandbox.Wait()
+	var sb strings.Builder
+
+	// Save stdin so the backgrounded sandbox can still read the terminal.
+	// POSIX non-interactive shells redirect background jobs' stdin from /dev/null.
+	sb.WriteString("exec 3<&0\n")
+
+	// Write the inner script to a temp file (avoids all quoting issues).
+	sb.WriteString("_AIGATE_INNER=$(mktemp /tmp/.aigate-inner-XXXXXX)\n")
+	sb.WriteString(fmt.Sprintf("printf '%%s' '%s' | base64 -d > \"$_AIGATE_INNER\"\n", encoded))
+
+	// Start the sandbox in a new net/mount/pid namespace (background, stdin from fd 3).
+	sb.WriteString("unshare --net --mount --pid --fork -- sh \"$_AIGATE_INNER\" <&3 &\n")
+	sb.WriteString("_SANDBOX_PID=$!\n")
+	sb.WriteString("exec 3<&-\n")
+
+	// Wait until the sandbox has entered its new network namespace.
+	sb.WriteString("_SELF_NS=$(readlink /proc/self/ns/net)\n")
+	sb.WriteString("while [ -e \"/proc/$_SANDBOX_PID\" ] && [ \"$(readlink /proc/$_SANDBOX_PID/ns/net 2>/dev/null)\" = \"$_SELF_NS\" ]; do sleep 0.01; done\n")
+
+	// Launch slirp4netns: runs in user ns (has CAP_SYS_ADMIN) + host network.
+	sb.WriteString("slirp4netns --configure $_SANDBOX_PID tap0 &\n")
+	sb.WriteString("_SLIRP_PID=$!\n")
+
+	// Wait for the sandbox to exit, then clean up.
+	sb.WriteString("wait $_SANDBOX_PID 2>/dev/null\n")
+	sb.WriteString("_EXIT=$?\n")
+	sb.WriteString("kill $_SLIRP_PID 2>/dev/null; wait $_SLIRP_PID 2>/dev/null\n")
+	sb.WriteString("rm -f \"$_AIGATE_INNER\"\n")
+	sb.WriteString("exit $_EXIT\n")
+
+	return sb.String()
 }
 
 // buildNetFilterScript builds the shell script that runs inside the network namespace.

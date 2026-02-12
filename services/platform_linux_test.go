@@ -3,6 +3,7 @@
 package services
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"strings"
@@ -462,6 +463,56 @@ func TestRunSandboxedDispatch(t *testing.T) {
 			if arg == "--net" {
 				t.Error("fallback runUnshare should not pass --net flag")
 			}
+		}
+	})
+}
+
+func TestBuildOrchestrationScript(t *testing.T) {
+	inner := "echo hello world\n"
+
+	t.Run("embeds inner script via base64", func(t *testing.T) {
+		script := buildOrchestrationScript(inner)
+		encoded := base64.StdEncoding.EncodeToString([]byte(inner))
+		if !strings.Contains(script, encoded) {
+			t.Error("orchestration script should contain base64-encoded inner script")
+		}
+	})
+
+	t.Run("preserves stdin via fd 3", func(t *testing.T) {
+		script := buildOrchestrationScript(inner)
+		if !strings.Contains(script, "exec 3<&0") {
+			t.Error("should save stdin to fd 3")
+		}
+		if !strings.Contains(script, "<&3") {
+			t.Error("should redirect fd 3 to sandbox stdin")
+		}
+	})
+
+	t.Run("uses two-layer unshare", func(t *testing.T) {
+		script := buildOrchestrationScript(inner)
+		// Inner unshare should create net namespace (outer only creates user ns)
+		if !strings.Contains(script, "unshare --net --mount --pid --fork") {
+			t.Error("inner unshare should create net/mount/pid namespaces")
+		}
+	})
+
+	t.Run("runs slirp4netns inside user namespace", func(t *testing.T) {
+		script := buildOrchestrationScript(inner)
+		if !strings.Contains(script, "slirp4netns --configure $_SANDBOX_PID tap0") {
+			t.Error("should launch slirp4netns with sandbox PID")
+		}
+	})
+
+	t.Run("waits for namespace and cleans up", func(t *testing.T) {
+		script := buildOrchestrationScript(inner)
+		if !strings.Contains(script, "readlink /proc/$_SANDBOX_PID/ns/net") {
+			t.Error("should wait for net namespace to differ from host")
+		}
+		if !strings.Contains(script, "wait $_SANDBOX_PID") {
+			t.Error("should wait for sandbox to finish")
+		}
+		if !strings.Contains(script, "kill $_SLIRP_PID") {
+			t.Error("should kill slirp4netns on cleanup")
 		}
 	})
 }
