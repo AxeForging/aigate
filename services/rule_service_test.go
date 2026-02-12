@@ -133,11 +133,42 @@ func TestIsCommandBlocked(t *testing.T) {
 		DenyExec: []string{"curl", "wget", "nc"},
 	}
 
-	if !svc.IsCommandBlocked(cfg, "curl") {
+	if !svc.IsCommandBlocked(cfg, "curl", nil) {
 		t.Error("IsCommandBlocked(curl) should be true")
 	}
-	if svc.IsCommandBlocked(cfg, "go") {
+	if svc.IsCommandBlocked(cfg, "go", nil) {
 		t.Error("IsCommandBlocked(go) should be false")
+	}
+}
+
+func TestIsCommandBlocked_Subcommand(t *testing.T) {
+	svc := NewRuleService()
+	cfg := &domain.Config{
+		DenyExec: []string{"kubectl delete", "kubectl create"},
+	}
+
+	if !svc.IsCommandBlocked(cfg, "kubectl", []string{"delete", "pod"}) {
+		t.Error("IsCommandBlocked should block kubectl delete")
+	}
+	if !svc.IsCommandBlocked(cfg, "kubectl", []string{"-n", "default", "delete", "pod"}) {
+		t.Error("IsCommandBlocked should block kubectl delete in middle of args")
+	}
+	if !svc.IsCommandBlocked(cfg, "kubectl", []string{"create", "deployment"}) {
+		t.Error("IsCommandBlocked should block kubectl create")
+	}
+}
+
+func TestIsCommandBlocked_SubcommandNotMatched(t *testing.T) {
+	svc := NewRuleService()
+	cfg := &domain.Config{
+		DenyExec: []string{"kubectl delete"},
+	}
+
+	if svc.IsCommandBlocked(cfg, "kubectl", []string{"get", "pods"}) {
+		t.Error("IsCommandBlocked should allow kubectl get when only delete is denied")
+	}
+	if svc.IsCommandBlocked(cfg, "kubectl", []string{"describe", "pod", "my-pod"}) {
+		t.Error("IsCommandBlocked should allow kubectl describe when only delete is denied")
 	}
 }
 
