@@ -389,6 +389,10 @@ func buildNetFilterScript(allowNetHosts, dnsServers []string, profile domain.San
 
 	sb.WriteString("iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited\n")
 
+	// Print network restrictions to stderr so AI agents see them
+	sb.WriteString(fmt.Sprintf("echo '[aigate] network restricted: only %s are reachable (all other connections will be rejected)' >&2\n",
+		strings.Join(allowNetHosts, ", ")))
+
 	// Mount overrides for deny_read
 	sb.WriteString(buildMountOverrides(profile))
 
