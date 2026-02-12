@@ -18,8 +18,9 @@
 curl -L https://github.com/AxeForging/aigate/releases/latest/download/aigate-linux-amd64.tar.gz | tar xz
 sudo mv aigate-linux-amd64 /usr/local/bin/aigate
 
-# Initialize sandbox
-sudo aigate init
+# Set up sandbox
+sudo aigate setup              # One-time: create OS group/user for ACLs
+aigate init                    # Create default config
 
 # Add restrictions
 aigate deny read .env secrets/ *.pem
@@ -63,13 +64,15 @@ AI coding tools rely on application-level permission systems that can be bypasse
 ## Commands
 
 ```sh
-aigate init                                 # Create sandbox group/user/config
+sudo aigate setup                           # Create OS group/user (one-time)
+aigate init                                 # Create default config
 aigate deny read .env secrets/ *.pem        # Block file access
 aigate deny exec curl wget ssh              # Block commands
 aigate deny net --except api.anthropic.com  # Restrict network
 aigate allow read .env                      # Remove a deny rule
 aigate run -- claude                        # Run AI tool in sandbox
 aigate status                               # Show current rules
+aigate help-ai                              # Show AI-friendly usage examples
 aigate reset --force                        # Remove everything
 ```
 
