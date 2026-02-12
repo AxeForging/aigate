@@ -3,6 +3,7 @@ package actions
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/AxeForging/aigate/domain"
 	"github.com/AxeForging/aigate/helpers"
@@ -60,5 +61,22 @@ func (a *RunAction) Execute(c *cli.Context) error {
 		Int("allow_net", len(merged.AllowNet)).
 		Msg("Running sandboxed command")
 
+	printSandboxBanner(merged)
+
 	return a.runner.Run(profile, cmd, cmdArgs)
+}
+
+// printSandboxBanner prints active restrictions to stderr so AI agents
+// (and users) can see exactly what is enforced inside the sandbox.
+func printSandboxBanner(cfg *domain.Config) {
+	fmt.Fprintln(os.Stderr, "[aigate] sandbox active")
+	if len(cfg.DenyRead) > 0 {
+		fmt.Fprintf(os.Stderr, "[aigate] deny_read: %s\n", strings.Join(cfg.DenyRead, ", "))
+	}
+	if len(cfg.DenyExec) > 0 {
+		fmt.Fprintf(os.Stderr, "[aigate] deny_exec: %s\n", strings.Join(cfg.DenyExec, ", "))
+	}
+	if len(cfg.AllowNet) > 0 {
+		fmt.Fprintf(os.Stderr, "[aigate] allow_net: %s (all other outbound connections will be blocked)\n", strings.Join(cfg.AllowNet, ", "))
+	}
 }

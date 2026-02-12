@@ -387,7 +387,7 @@ func buildNetFilterScript(allowNetHosts, dnsServers []string, profile domain.San
 		sb.WriteString(fmt.Sprintf("for _attempt in 1 2 3; do _ips=$(getent ahostsv4 %q 2>/dev/null | awk '{print $1}' | sort -u); [ -n \"$_ips\" ] && break; sleep 0.5; done; for _ip in $_ips; do iptables -A OUTPUT -d \"$_ip\" -j ACCEPT; done\n", host))
 	}
 
-	sb.WriteString("iptables -A OUTPUT -j REJECT\n")
+	sb.WriteString("iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited\n")
 
 	// Mount overrides for deny_read
 	sb.WriteString(buildMountOverrides(profile))
