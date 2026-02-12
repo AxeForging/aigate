@@ -276,14 +276,17 @@ func parseDNSFromFile(path string) []string {
 
 // runWithNetFilter runs a command in a network-filtered namespace using slirp4netns.
 func (p *LinuxPlatform) runWithNetFilter(profile domain.SandboxProfile, cmd string, args []string) error {
-	allowedIPs := resolveAllowedIPs(profile.Config.AllowNet)
 	dnsServers := getSystemDNS()
+	// Pre-resolve on host for logging only; actual iptables rules are
+	// resolved inside the namespace to avoid CDN/anycast IP mismatches.
+	hostIPs := resolveAllowedIPs(profile.Config.AllowNet)
 	helpers.Log.Info().
-		Strs("allowed_ips", allowedIPs).
+		Strs("allow_net", profile.Config.AllowNet).
+		Strs("host_resolved_ips", hostIPs).
 		Strs("dns_servers", dnsServers).
 		Msg("starting network-filtered sandbox")
 
-	innerScript := buildNetFilterScript(allowedIPs, dnsServers, profile, cmd, args)
+	innerScript := buildNetFilterScript(profile.Config.AllowNet, dnsServers, profile, cmd, args)
 
 	sandbox := exec.Command("unshare", "--user", "--map-root-user", "--net",
 		"--mount", "--pid", "--fork", "--", "sh", "-c", innerScript)
@@ -296,6 +299,7 @@ func (p *LinuxPlatform) runWithNetFilter(profile domain.SandboxProfile, cmd stri
 
 	slirp := exec.Command("slirp4netns", "--configure",
 		strconv.Itoa(sandbox.Process.Pid), "tap0")
+	slirp.Stderr = os.Stderr
 	if err := slirp.Start(); err != nil {
 		sandbox.Process.Kill()
 		sandbox.Wait()
@@ -310,7 +314,9 @@ func (p *LinuxPlatform) runWithNetFilter(profile domain.SandboxProfile, cmd stri
 }
 
 // buildNetFilterScript builds the shell script that runs inside the network namespace.
-func buildNetFilterScript(allowedIPs, dnsServers []string, profile domain.SandboxProfile, cmd string, args []string) string {
+// allowNetHosts are the original hostnames/IPs from the config — resolution happens
+// inside the namespace so the iptables rules match what the sandboxed process will see.
+func buildNetFilterScript(allowNetHosts, dnsServers []string, profile domain.SandboxProfile, cmd string, args []string) string {
 	var sb strings.Builder
 
 	// Wait for tap0 interface to come up (slirp4netns creates it)
@@ -321,7 +327,10 @@ func buildNetFilterScript(allowedIPs, dnsServers []string, profile domain.Sandbo
 	sb.WriteString("mount --bind /tmp/.aigate-resolv /etc/resolv.conf 2>/dev/null || ")
 	sb.WriteString("mount --bind /tmp/.aigate-resolv $(readlink -f /etc/resolv.conf) 2>/dev/null || true\n")
 
-	// iptables rules: allow loopback + DNS + allowed IPs, reject the rest
+	// Wait for DNS to actually work (slirp4netns forwarder may take a moment)
+	sb.WriteString("for i in $(seq 1 50); do getent ahostsv4 localhost >/dev/null 2>&1 && break; sleep 0.1; done\n")
+
+	// iptables rules: allow loopback + DNS, reject the rest
 	sb.WriteString("iptables -A OUTPUT -o lo -j ACCEPT\n")
 	sb.WriteString("iptables -A OUTPUT -p udp --dport 53 -j ACCEPT\n")
 	sb.WriteString("iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT\n")
@@ -331,9 +340,13 @@ func buildNetFilterScript(allowedIPs, dnsServers []string, profile domain.Sandbo
 		sb.WriteString(fmt.Sprintf("iptables -A OUTPUT -d %s -j ACCEPT\n", dns))
 	}
 
-	for _, ip := range allowedIPs {
-		sb.WriteString(fmt.Sprintf("iptables -A OUTPUT -d %s -j ACCEPT\n", ip))
+	// Resolve each AllowNet entry INSIDE the namespace and add iptables rules.
+	// This ensures the IPs match what the sandboxed process will get from DNS,
+	// avoiding mismatches from CDN anycast / DNS load balancing.
+	for _, host := range allowNetHosts {
+		sb.WriteString(fmt.Sprintf("for _ip in $(getent ahostsv4 %q 2>/dev/null | awk '{print $1}' | sort -u); do iptables -A OUTPUT -d \"$_ip\" -j ACCEPT; done\n", host))
 	}
+
 	sb.WriteString("iptables -A OUTPUT -j REJECT\n")
 
 	// Mount overrides for deny_read

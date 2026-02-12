@@ -335,17 +335,19 @@ func TestBuildNetFilterScript(t *testing.T) {
 		WorkDir: "/tmp",
 	}
 
-	t.Run("contains iptables rules for allowed IPs", func(t *testing.T) {
+	t.Run("resolves hosts inside namespace via getent", func(t *testing.T) {
 		script := buildNetFilterScript(
-			[]string{"1.2.3.4", "5.6.7.8"},
+			[]string{"api.anthropic.com", "1.2.3.4"},
 			[]string{"8.8.8.8"},
 			profile, "echo", []string{"hello"},
 		)
-		if !strings.Contains(script, "iptables -A OUTPUT -d 1.2.3.4 -j ACCEPT") {
-			t.Error("script should contain iptables rule for 1.2.3.4")
+		// Hostnames should be resolved inside the namespace via getent ahostsv4
+		if !strings.Contains(script, "getent ahostsv4 \"api.anthropic.com\"") {
+			t.Error("script should resolve api.anthropic.com inside namespace")
 		}
-		if !strings.Contains(script, "iptables -A OUTPUT -d 5.6.7.8 -j ACCEPT") {
-			t.Error("script should contain iptables rule for 5.6.7.8")
+		// Raw IPs are also passed through getent (getent handles IPs fine)
+		if !strings.Contains(script, "getent ahostsv4 \"1.2.3.4\"") {
+			t.Error("script should include raw IP 1.2.3.4 via getent")
 		}
 		if !strings.Contains(script, "iptables -A OUTPUT -j REJECT") {
 			t.Error("script should contain final REJECT rule")
@@ -354,7 +356,7 @@ func TestBuildNetFilterScript(t *testing.T) {
 
 	t.Run("contains DNS rules", func(t *testing.T) {
 		script := buildNetFilterScript(
-			[]string{"1.2.3.4"},
+			[]string{"example.com"},
 			[]string{"8.8.8.8", "1.1.1.1"},
 			profile, "echo", []string{"hello"},
 		)
@@ -383,6 +385,21 @@ func TestBuildNetFilterScript(t *testing.T) {
 		script := buildNetFilterScript(nil, nil, profile, "echo", nil)
 		if !strings.Contains(script, "ip addr show tap0") {
 			t.Error("script should wait for tap0 interface")
+		}
+	})
+
+	t.Run("waits for DNS before resolving hosts", func(t *testing.T) {
+		script := buildNetFilterScript([]string{"example.com"}, nil, profile, "echo", nil)
+		dnsWaitIdx := strings.Index(script, "getent ahostsv4 localhost")
+		resolveIdx := strings.Index(script, "getent ahostsv4 \"example.com\"")
+		if dnsWaitIdx == -1 {
+			t.Fatal("script should contain DNS readiness check")
+		}
+		if resolveIdx == -1 {
+			t.Fatal("script should contain host resolution")
+		}
+		if dnsWaitIdx > resolveIdx {
+			t.Error("DNS wait should come before host resolution")
 		}
 	})
 
