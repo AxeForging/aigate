@@ -430,7 +430,7 @@ func buildPolicyFile(profile domain.SandboxProfile) string {
 // with a .aigate-denied marker file. Both point to /tmp/.aigate-policy for
 // the full restriction list.
 func buildMountOverrides(profile domain.SandboxProfile) string {
-	const denyMsg = "[aigate] access denied: this file is protected by sandbox policy. Run 'cat /tmp/.aigate-policy' to see all active restrictions."
+	const denyMsg = "[aigate] access denied: this file is protected by sandbox policy. See /tmp/.aigate-policy for all active restrictions."
 	const dirMsg = "[aigate] access denied: this directory is protected by sandbox policy. Run 'cat /tmp/.aigate-policy' to see all active restrictions."
 
 	var mountCmds []string
