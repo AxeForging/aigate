@@ -172,6 +172,67 @@ func TestCLI_DenyExec(t *testing.T) {
 	}
 }
 
+func TestCLI_DenyExecSubcommand(t *testing.T) {
+	bin := buildBinary(t)
+	tmpHome := t.TempDir()
+	env := append(os.Environ(), "HOME="+tmpHome)
+
+	// Create minimal config
+	configDir := filepath.Join(tmpHome, ".aigate")
+	os.MkdirAll(configDir, 0o755)
+	configContent := "group: ai-agents\nuser: ai-runner\ndeny_read: []\ndeny_exec: []\nallow_net: []\n"
+	os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644)
+
+	// Add subcommand deny rule
+	cmd := exec.Command(bin, "deny", "exec", "kubectl delete", "kubectl create")
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("deny exec subcommand failed: %v\n%s", err, string(out))
+	}
+	if !strings.Contains(string(out), "kubectl delete") {
+		t.Error("deny exec output should mention 'kubectl delete'")
+	}
+
+	// Verify status shows the subcommand rules
+	cmd = exec.Command(bin, "status")
+	cmd.Env = env
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("status failed: %v\n%s", err, string(out))
+	}
+	output := string(out)
+	if !strings.Contains(output, "kubectl delete") {
+		t.Error("status should show 'kubectl delete' in deny rules")
+	}
+	if !strings.Contains(output, "kubectl create") {
+		t.Error("status should show 'kubectl create' in deny rules")
+	}
+
+	// Remove one subcommand rule
+	cmd = exec.Command(bin, "allow", "exec", "kubectl delete")
+	cmd.Env = env
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("allow exec subcommand failed: %v\n%s", err, string(out))
+	}
+
+	// Verify it's removed but the other remains
+	cmd = exec.Command(bin, "status")
+	cmd.Env = env
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("status failed: %v\n%s", err, string(out))
+	}
+	output = string(out)
+	if strings.Contains(output, "kubectl delete") {
+		t.Error("status should not show 'kubectl delete' after allow")
+	}
+	if !strings.Contains(output, "kubectl create") {
+		t.Error("status should still show 'kubectl create'")
+	}
+}
+
 func TestCLI_DenyReadNoArgs(t *testing.T) {
 	bin := buildBinary(t)
 	cmd := exec.Command(bin, "deny", "read")

@@ -101,3 +101,78 @@ func TestRunnerService_SandboxError(t *testing.T) {
 		t.Fatal("Run() should propagate sandbox errors")
 	}
 }
+
+func TestRunnerService_BlockedSubcommand(t *testing.T) {
+	mock := &mockPlatform{}
+	svc := NewRunnerService(mock)
+	profile := domain.SandboxProfile{
+		Config: domain.Config{
+			DenyExec: []string{"kubectl delete"},
+		},
+	}
+
+	err := svc.Run(profile, "kubectl", []string{"delete", "pod", "my-pod"})
+	if err == nil {
+		t.Fatal("Run() should block kubectl delete")
+	}
+	if !errors.Is(err, helpers.ErrCommandBlocked) {
+		t.Errorf("Run() error = %v, want ErrCommandBlocked", err)
+	}
+	if mock.runSandboxedCalled {
+		t.Error("RunSandboxed should not be called for blocked subcommand")
+	}
+}
+
+func TestRunnerService_AllowedSubcommand(t *testing.T) {
+	mock := &mockPlatform{}
+	svc := NewRunnerService(mock)
+	profile := domain.SandboxProfile{
+		Config: domain.Config{
+			DenyExec: []string{"kubectl delete"},
+		},
+	}
+
+	err := svc.Run(profile, "kubectl", []string{"get", "pods"})
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil for allowed subcommand", err)
+	}
+	if !mock.runSandboxedCalled {
+		t.Error("RunSandboxed should be called for allowed subcommand")
+	}
+}
+
+func TestRunnerService_SubcommandInMiddleOfArgs(t *testing.T) {
+	mock := &mockPlatform{}
+	svc := NewRunnerService(mock)
+	profile := domain.SandboxProfile{
+		Config: domain.Config{
+			DenyExec: []string{"kubectl delete"},
+		},
+	}
+
+	err := svc.Run(profile, "kubectl", []string{"-n", "default", "delete", "pod", "my-pod"})
+	if err == nil {
+		t.Fatal("Run() should block kubectl delete even when subcommand is in middle of args")
+	}
+	if !errors.Is(err, helpers.ErrCommandBlocked) {
+		t.Errorf("Run() error = %v, want ErrCommandBlocked", err)
+	}
+}
+
+func TestRunnerService_FullCommandBlockStillWorks(t *testing.T) {
+	mock := &mockPlatform{}
+	svc := NewRunnerService(mock)
+	profile := domain.SandboxProfile{
+		Config: domain.Config{
+			DenyExec: []string{"kubectl"},
+		},
+	}
+
+	err := svc.Run(profile, "kubectl", []string{"get", "pods"})
+	if err == nil {
+		t.Fatal("Run() should block all kubectl usage when full command is denied")
+	}
+	if !errors.Is(err, helpers.ErrCommandBlocked) {
+		t.Errorf("Run() error = %v, want ErrCommandBlocked", err)
+	}
+}
