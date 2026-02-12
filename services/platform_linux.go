@@ -328,7 +328,8 @@ func buildOrchestrationScript(innerScript string) string {
 	sb.WriteString("while [ -e \"/proc/$_SANDBOX_PID\" ] && [ \"$(readlink /proc/$_SANDBOX_PID/ns/net 2>/dev/null)\" = \"$_SELF_NS\" ]; do sleep 0.01; done\n")
 
 	// Launch slirp4netns: runs in user ns (has CAP_SYS_ADMIN) + host network.
-	sb.WriteString("slirp4netns --configure $_SANDBOX_PID tap0 &\n")
+	// Suppress stdout (verbose protocol debug), keep stderr for real errors.
+	sb.WriteString("slirp4netns --configure $_SANDBOX_PID tap0 >/dev/null &\n")
 	sb.WriteString("_SLIRP_PID=$!\n")
 
 	// Wait for the sandbox to exit, then clean up.
@@ -347,6 +348,11 @@ func buildOrchestrationScript(innerScript string) string {
 func buildNetFilterScript(allowNetHosts, dnsServers []string, profile domain.SandboxProfile, cmd string, args []string) string {
 	var sb strings.Builder
 
+	// Remount /proc so it reflects the new PID namespace.
+	// Without this, /proc/self is stale and glibc's NSS/dlopen fails with
+	// "fatal library error, lookup self".
+	sb.WriteString("mount -t proc proc /proc\n")
+
 	// Wait for tap0 interface to come up (slirp4netns creates it)
 	sb.WriteString("for i in $(seq 1 100); do ip addr show tap0 2>/dev/null | grep -q inet && break; sleep 0.05; done\n")
 
@@ -355,10 +361,8 @@ func buildNetFilterScript(allowNetHosts, dnsServers []string, profile domain.San
 	sb.WriteString("mount --bind /tmp/.aigate-resolv /etc/resolv.conf 2>/dev/null || ")
 	sb.WriteString("mount --bind /tmp/.aigate-resolv $(readlink -f /etc/resolv.conf) 2>/dev/null || true\n")
 
-	// Wait for DNS to actually work (slirp4netns forwarder may take a moment)
-	sb.WriteString("for i in $(seq 1 50); do getent ahostsv4 localhost >/dev/null 2>&1 && break; sleep 0.1; done\n")
-
-	// iptables rules: allow loopback + DNS, reject the rest
+	// iptables rules: allow loopback + DNS before anything else
+	// (DNS must work for the host resolution below)
 	sb.WriteString("iptables -A OUTPUT -o lo -j ACCEPT\n")
 	sb.WriteString("iptables -A OUTPUT -p udp --dport 53 -j ACCEPT\n")
 	sb.WriteString("iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT\n")
@@ -368,11 +372,19 @@ func buildNetFilterScript(allowNetHosts, dnsServers []string, profile domain.San
 		sb.WriteString(fmt.Sprintf("iptables -A OUTPUT -d %s -j ACCEPT\n", dns))
 	}
 
+	// Wait for DNS to actually work by testing a REAL remote query.
+	// Using localhost previously was wrong — it resolves from /etc/hosts,
+	// not DNS, so it passed before slirp4netns DNS (10.0.2.3) was ready.
+	if len(allowNetHosts) > 0 {
+		sb.WriteString(fmt.Sprintf("for i in $(seq 1 50); do getent ahostsv4 %q >/dev/null 2>&1 && break; sleep 0.1; done\n", allowNetHosts[0]))
+	}
+
 	// Resolve each AllowNet entry INSIDE the namespace and add iptables rules.
 	// This ensures the IPs match what the sandboxed process will get from DNS,
 	// avoiding mismatches from CDN anycast / DNS load balancing.
+	// Each host retries up to 3 times to handle transient DNS hiccups.
 	for _, host := range allowNetHosts {
-		sb.WriteString(fmt.Sprintf("for _ip in $(getent ahostsv4 %q 2>/dev/null | awk '{print $1}' | sort -u); do iptables -A OUTPUT -d \"$_ip\" -j ACCEPT; done\n", host))
+		sb.WriteString(fmt.Sprintf("for _attempt in 1 2 3; do _ips=$(getent ahostsv4 %q 2>/dev/null | awk '{print $1}' | sort -u); [ -n \"$_ips\" ] && break; sleep 0.5; done; for _ip in $_ips; do iptables -A OUTPUT -d \"$_ip\" -j ACCEPT; done\n", host))
 	}
 
 	sb.WriteString("iptables -A OUTPUT -j REJECT\n")

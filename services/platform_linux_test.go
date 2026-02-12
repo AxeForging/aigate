@@ -389,18 +389,22 @@ func TestBuildNetFilterScript(t *testing.T) {
 		}
 	})
 
-	t.Run("waits for DNS before resolving hosts", func(t *testing.T) {
-		script := buildNetFilterScript([]string{"example.com"}, nil, profile, "echo", nil)
-		dnsWaitIdx := strings.Index(script, "getent ahostsv4 localhost")
-		resolveIdx := strings.Index(script, "getent ahostsv4 \"example.com\"")
+	t.Run("waits for real DNS before resolving hosts", func(t *testing.T) {
+		script := buildNetFilterScript([]string{"example.com", "other.com"}, nil, profile, "echo", nil)
+		// DNS readiness check should use the FIRST AllowNet host, not localhost
+		dnsWaitIdx := strings.Index(script, "getent ahostsv4 \"example.com\" >/dev/null")
 		if dnsWaitIdx == -1 {
-			t.Fatal("script should contain DNS readiness check")
+			t.Fatal("script should check DNS readiness with first AllowNet host")
 		}
-		if resolveIdx == -1 {
-			t.Fatal("script should contain host resolution")
+		if strings.Contains(script, "getent ahostsv4 localhost") {
+			t.Error("should NOT use localhost for DNS readiness (resolves from /etc/hosts, not DNS)")
 		}
-		if dnsWaitIdx > resolveIdx {
-			t.Error("DNS wait should come before host resolution")
+	})
+
+	t.Run("retries host resolution on failure", func(t *testing.T) {
+		script := buildNetFilterScript([]string{"example.com"}, nil, profile, "echo", nil)
+		if !strings.Contains(script, "_attempt in 1 2 3") {
+			t.Error("should retry getent resolution")
 		}
 	})
 
