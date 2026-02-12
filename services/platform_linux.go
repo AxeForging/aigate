@@ -193,7 +193,7 @@ func (p *LinuxPlatform) runUnshare(profile domain.SandboxProfile, cmd string, ar
 		"--",
 	}
 
-	shellCmd := buildMountOverrides(profile) + shellEscape(cmd, args)
+	shellCmd := buildPolicyFile(profile) + buildMountOverrides(profile) + shellEscape(cmd, args)
 	fullArgs := append(unshareArgs, "sh", "-c", shellCmd)
 	return p.exec.RunPassthrough("unshare", fullArgs...)
 }
@@ -389,11 +389,8 @@ func buildNetFilterScript(allowNetHosts, dnsServers []string, profile domain.San
 
 	sb.WriteString("iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited\n")
 
-	// Print network restrictions to stderr so AI agents see them
-	sb.WriteString(fmt.Sprintf("echo '[aigate] network restricted: only %s are reachable (all other connections will be rejected)' >&2\n",
-		strings.Join(allowNetHosts, ", ")))
-
-	// Mount overrides for deny_read
+	// Write policy file + mount overrides (deny_read markers point here)
+	sb.WriteString(buildPolicyFile(profile))
 	sb.WriteString(buildMountOverrides(profile))
 
 	// Execute the target command
@@ -404,11 +401,38 @@ func buildNetFilterScript(allowNetHosts, dnsServers []string, profile domain.San
 	return sb.String()
 }
 
+// buildPolicyFile generates shell commands to write /tmp/.aigate-policy inside the
+// sandbox, summarizing all active restrictions. Deny markers and AI agents can
+// read this file to understand the full sandbox policy.
+func buildPolicyFile(profile domain.SandboxProfile) string {
+	var sb strings.Builder
+	sb.WriteString("{\n")
+	sb.WriteString("printf '[aigate] sandbox policy\\n\\n'\n")
+	if len(profile.Config.DenyRead) > 0 {
+		sb.WriteString(fmt.Sprintf("printf 'deny_read: %s\\n'\n", strings.Join(profile.Config.DenyRead, ", ")))
+		sb.WriteString("printf 'These files/directories appear empty or contain a deny marker inside the sandbox.\\n\\n'\n")
+	}
+	if len(profile.Config.DenyExec) > 0 {
+		sb.WriteString(fmt.Sprintf("printf 'deny_exec: %s\\n'\n", strings.Join(profile.Config.DenyExec, ", ")))
+		sb.WriteString("printf 'These commands are blocked before the sandbox starts.\\n\\n'\n")
+	}
+	if len(profile.Config.AllowNet) > 0 {
+		sb.WriteString(fmt.Sprintf("printf 'allow_net: %s\\n'\n", strings.Join(profile.Config.AllowNet, ", ")))
+		sb.WriteString("printf 'Only these hosts are reachable. All other outbound connections are rejected.\\n\\n'\n")
+	}
+	sb.WriteString("} > /tmp/.aigate-policy\n")
+	return sb.String()
+}
+
 // buildMountOverrides generates shell commands to overmount denied paths.
 // Files are replaced with a marker containing an explicit deny message so AI
 // agents understand why the content is unavailable. Directories get a tmpfs
-// with a .aigate-denied marker file.
+// with a .aigate-denied marker file. Both point to /tmp/.aigate-policy for
+// the full restriction list.
 func buildMountOverrides(profile domain.SandboxProfile) string {
+	const denyMsg = "[aigate] access denied: this file is protected by sandbox policy. Run 'cat /tmp/.aigate-policy' to see all active restrictions."
+	const dirMsg = "[aigate] access denied: this directory is protected by sandbox policy. Run 'cat /tmp/.aigate-policy' to see all active restrictions."
+
 	var mountCmds []string
 	hasFileDeny := false
 
@@ -417,10 +441,9 @@ func buildMountOverrides(profile domain.SandboxProfile) string {
 		for _, path := range paths {
 			if info, err := os.Stat(path); err == nil {
 				if info.IsDir() {
-					// Mount tmpfs writable, write marker, remount read-only
 					mountCmds = append(mountCmds, fmt.Sprintf(
-						"mount -t tmpfs -o size=4k tmpfs %s && printf '[aigate] access denied: this directory is protected by sandbox policy\\n' > %s/.aigate-denied && mount -o remount,ro %s",
-						path, path, path))
+						"mount -t tmpfs -o size=4k tmpfs %s && printf '%s\\n' > %s/.aigate-denied && mount -o remount,ro %s",
+						path, dirMsg, path, path))
 				} else {
 					hasFileDeny = true
 					mountCmds = append(mountCmds, fmt.Sprintf("mount --bind /tmp/.aigate-denied %s", path))
@@ -431,7 +454,7 @@ func buildMountOverrides(profile domain.SandboxProfile) string {
 
 	var sb strings.Builder
 	if hasFileDeny {
-		sb.WriteString("printf '[aigate] access denied: this file is protected by sandbox policy\\n' > /tmp/.aigate-denied && ")
+		sb.WriteString(fmt.Sprintf("printf '%s\\n' > /tmp/.aigate-denied && ", denyMsg))
 	}
 	if len(mountCmds) > 0 {
 		sb.WriteString(strings.Join(mountCmds, " && "))
