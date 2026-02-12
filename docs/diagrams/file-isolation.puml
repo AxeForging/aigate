@@ -1,0 +1,67 @@
+@startuml file-isolation
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName Inter
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam ArrowColor #444444
+skinparam RectangleBorderColor #888888
+skinparam PackageBorderColor #666666
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #FBC02D
+
+title **File Isolation -- Linux & macOS**\ndual-layer: ACLs (persistent) + namespace overrides (runtime)
+
+rectangle "Layer 1: Persistent ACLs\n(applied at deny/allow time)" as acls #C8E6C9 {
+
+  rectangle "**Linux -- POSIX ACLs**\nsetfacl -m g:ai-agents:--- <path>" as linuxacl #A5D6A7
+
+  rectangle "**macOS -- Extended ACLs**\nchmod +a ""group:ai-agents deny read"" <path>" as macosacl #A5D6A7
+}
+
+rectangle "Layer 2: Runtime Overrides\n(applied inside sandbox)" as runtime #FFECB3 {
+
+  rectangle "**Directories**\nmount -t tmpfs -o ro,size=0 tmpfs <path>" as tmpfs #FFE082
+  rectangle "**Files**\nmount --bind /dev/null <path>" as devnull #FFE082
+}
+
+rectangle "**Protected Paths**" as paths #FFCDD2 {
+  rectangle ".env, .env.*, *.pem, *.key" as p1 #FFFFFF
+  rectangle ".ssh/, .aws/, .gcloud/" as p2 #FFFFFF
+  rectangle "secrets/, credentials/" as p3 #FFFFFF
+}
+
+paths -up-> acls : aigate deny read
+paths -up-> runtime : aigate run
+
+note right of linuxacl
+  Recursive with inheritance:
+  setfacl -R -m g:ai-agents:--- dir/
+  setfacl -R -m d:g:ai-agents:--- dir/
+end note
+
+note right of macosacl
+  Denies: read, readattr,
+  readextattr, readsecurity
+  Dirs add: list, search,
+  file_inherit, directory_inherit
+end note
+
+note right of tmpfs
+  Only on **Linux** (mount namespaces).
+  macOS uses Seatbelt file-read* deny
+  rules instead:
+  (deny file-read* (subpath "/secrets"))
+  (deny file-read* (literal ".env"))
+end note
+
+note bottom of paths
+  Both layers work together:
+  ACLs block at the OS level
+  (survives across sessions).
+  Mount overrides add defense-in-depth
+  at runtime (even root inside the
+  namespace sees empty files/dirs).
+end note
+
+@enduml

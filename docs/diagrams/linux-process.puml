@@ -1,0 +1,71 @@
+@startuml linux-process
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName Inter
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam ArrowColor #444444
+skinparam RectangleBorderColor #888888
+skinparam PackageBorderColor #666666
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #FBC02D
+
+title **Linux Process & Filesystem Isolation**\nnamespaces + mount overrides (no root required)
+
+actor "User" as user
+
+rectangle "**aigate run -- <cmd>**" as aigate #E3F2FD
+
+rectangle "User Namespace\n(unshare --user --map-root-user)" as userns #FFF3E0 {
+
+  rectangle "Mount Namespace\n(unshare --mount)" as mntns #FFECB3 {
+
+    rectangle "**Mount Overrides**\n(deny_read enforcement)" as mounts #FFE082
+
+    rectangle "**/proc remount**\n(mount -t proc proc /proc)" as procmnt #FFE082
+
+    rectangle "**resolv.conf**\nbind-mount to 10.0.2.3\n(only with AllowNet)" as resolv #FFE082
+  }
+
+  rectangle "PID Namespace\n(unshare --pid --fork)" as pidns #E1BEE7 {
+    rectangle "**Sandboxed Process**\n<cmd> <args>" as proc #CE93D8
+  }
+}
+
+user --> aigate
+aigate --> userns
+
+note right of mounts
+  **deny_read paths:**
+  Directories -> tmpfs (ro, size=0)
+  Files -> bind /dev/null
+
+  Examples:
+  mount -t tmpfs tmpfs ~/.ssh/
+  mount --bind /dev/null .env
+end note
+
+note right of proc
+  Process sees itself as PID 1.
+  Cannot see or signal any host
+  processes. /proc remounted to
+  match the new PID namespace.
+end note
+
+note left of userns
+  Maps calling user to UID 0
+  inside the namespace. Gives
+  CAP_SYS_ADMIN for mount/net
+  operations without real root.
+end note
+
+note bottom of aigate
+  **deny_exec enforcement:**
+  Checked BEFORE entering the
+  sandbox. If the command (or
+  subcommand like "kubectl delete")
+  is in the deny list, aigate
+  refuses to run it.
+end note
+
+@enduml

@@ -1,6 +1,7 @@
 package actions
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/AxeForging/aigate/helpers"
@@ -31,16 +32,24 @@ func (a *InitAction) Execute(c *cli.Context) error {
 
 	helpers.Log.Info().Str("platform", a.platform.Name()).Msg("Initializing aigate sandbox")
 
-	// Create group
+	// Create group — skip if already exists
 	helpers.Log.Info().Str("group", group).Msg("Creating sandbox group")
 	if err := a.platform.CreateGroup(group); err != nil {
-		return fmt.Errorf("failed to create group: %w", err)
+		if errors.Is(err, helpers.ErrAlreadyInit) {
+			helpers.Log.Info().Str("group", group).Msg("Sandbox group already exists, skipping")
+		} else {
+			return fmt.Errorf("failed to create group: %w", err)
+		}
 	}
 
-	// Create user
+	// Create user — skip if already exists
 	helpers.Log.Info().Str("user", user).Str("group", group).Msg("Creating sandbox user")
 	if err := a.platform.CreateUser(user, group); err != nil {
-		return fmt.Errorf("failed to create user: %w", err)
+		if errors.Is(err, helpers.ErrAlreadyInit) {
+			helpers.Log.Info().Str("user", user).Msg("Sandbox user already exists, skipping")
+		} else {
+			return fmt.Errorf("failed to create user: %w", err)
+		}
 	}
 
 	// Write default config

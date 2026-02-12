@@ -75,29 +75,9 @@ aigate reset --force                        # Remove everything
 
 ## How It Works
 
-```
-Your files:  .env  secrets/  .ssh/  *.pem
-                    |
-              aigate init
-                    |
-              OS group: ai-agents
-              OS user:  ai-runner
-              ACLs: deny read for ai-agents
-                    |
-              aigate run -- claude
-                    |
-              +--namespace--+
-              | mount: hide |
-              | net: restrict|
-              | pid: isolate |
-              +-------------+
-                    |
-              AI agent runs with:
-              - Cannot read .env, secrets/
-              - Cannot run curl, wget
-              - Cannot reach unauthorized hosts
-              - Cannot see host processes
-```
+![Linux Process Isolation](docs/diagrams/linux-process.png)
+
+See [docs/user/README.md](docs/user/README.md) for detailed architecture diagrams covering file isolation, network isolation (Linux & macOS), and process isolation.
 
 ## Configuration
 

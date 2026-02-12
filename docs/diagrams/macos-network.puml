@@ -1,0 +1,55 @@
+@startuml macos-network
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName Inter
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam ArrowColor #444444
+skinparam RectangleBorderColor #888888
+skinparam PackageBorderColor #666666
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #FBC02D
+
+title **macOS Network Isolation**\nsandbox-exec Seatbelt profiles (kernel-enforced)
+
+cloud "Internet" as internet #E0E0E0
+
+rectangle "sandbox-exec  (Sandbox.kext)" as sandbox #E3F2FD {
+
+  rectangle "**Seatbelt Profile (.sb)**" as profile #BBDEFB {
+    rectangle "(deny network-outbound)" as deny #FFCDD2
+    rectangle "(allow network-outbound (local ip))" as lo #FFFFFF
+    rectangle "(allow network-outbound\n (remote ip ""api.anthropic.com""))" as allow1 #C8E6C9
+    rectangle "(allow network-outbound\n (remote ip ""api.github.com""))" as allow2 #C8E6C9
+  }
+
+  rectangle "**Sandboxed Process**\nclaude / cursor / aider" as proc #CE93D8
+}
+
+proc -up-> profile : outbound traffic\nchecked by kernel
+allow1 -up-> internet : allowed
+allow2 -up-> internet : allowed
+deny -right[hidden]-> lo
+
+note right of proc
+  macOS **Sandbox.kext** enforces
+  the Seatbelt profile at the
+  kernel level.
+
+  No user-mode networking needed.
+  The kernel intercepts syscalls
+  and denies disallowed connections.
+end note
+
+note right of profile
+  Profile generated dynamically
+  by aigate from the allow_net
+  config. Written to a temp .sb
+  file and passed to sandbox-exec.
+
+  AllowNet hostnames are passed
+  directly (Seatbelt handles
+  DNS resolution natively).
+end note
+
+@enduml
