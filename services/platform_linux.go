@@ -3,8 +3,12 @@
 package services
 
 import (
+	"bufio"
 	"fmt"
+	"net"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/AxeForging/aigate/domain"
@@ -170,23 +174,181 @@ func (p *LinuxPlatform) ListACLs(workDir string) ([]string, error) {
 }
 
 func (p *LinuxPlatform) RunSandboxed(profile domain.SandboxProfile, cmd string, args []string) error {
-	// Build unshare command for namespace isolation
+	if len(profile.Config.AllowNet) > 0 {
+		if hasSlirp4netns() {
+			return p.runWithNetFilter(profile, cmd, args)
+		}
+		helpers.Log.Warn().Msg("slirp4netns not found; network filtering unavailable, running without network restrictions")
+	}
+	return p.runUnshare(profile, cmd, args)
+}
+
+// runUnshare runs a command in a user/mount/pid namespace without network filtering.
+func (p *LinuxPlatform) runUnshare(profile domain.SandboxProfile, cmd string, args []string) error {
 	unshareArgs := []string{
 		"--mount",         // Mount namespace
 		"--pid",           // PID namespace
 		"--fork",          // Required for PID namespace
 		"--map-root-user", // User namespace mapping
+		"--",
 	}
 
-	// Add network isolation if allow_net is configured
-	if len(profile.Config.AllowNet) > 0 {
-		unshareArgs = append(unshareArgs, "--net")
+	shellCmd := buildMountOverrides(profile) + shellEscape(cmd, args)
+	fullArgs := append(unshareArgs, "sh", "-c", shellCmd)
+	return p.exec.RunPassthrough("unshare", fullArgs...)
+}
+
+// hasSlirp4netns checks whether slirp4netns is available on the system.
+func hasSlirp4netns() bool {
+	_, err := exec.LookPath("slirp4netns")
+	return err == nil
+}
+
+// resolveAllowedIPs resolves a list of hostnames/IPs to deduplicated IPv4 addresses.
+func resolveAllowedIPs(hosts []string) []string {
+	seen := make(map[string]bool)
+	var result []string
+
+	for _, host := range hosts {
+		if ip := net.ParseIP(host); ip != nil {
+			// It's already an IP address — keep only IPv4
+			if ip.To4() != nil && !seen[host] {
+				seen[host] = true
+				result = append(result, host)
+			}
+			continue
+		}
+		// Resolve hostname
+		addrs, err := net.LookupHost(host)
+		if err != nil {
+			helpers.Log.Warn().Str("host", host).Err(err).Msg("failed to resolve host, skipping")
+			continue
+		}
+		for _, addr := range addrs {
+			if ip := net.ParseIP(addr); ip != nil && ip.To4() != nil && !seen[addr] {
+				seen[addr] = true
+				result = append(result, addr)
+			}
+		}
+	}
+	return result
+}
+
+// getSystemDNS reads upstream DNS servers from resolv.conf files.
+func getSystemDNS() []string {
+	// Try systemd-resolved upstream file first, then fall back to /etc/resolv.conf
+	for _, path := range []string{"/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"} {
+		servers := parseDNSFromFile(path)
+		if len(servers) > 0 {
+			return servers
+		}
+	}
+	return []string{"8.8.8.8", "1.1.1.1"}
+}
+
+func parseDNSFromFile(path string) []string {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	var servers []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "nameserver") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		addr := fields[1]
+		// Skip localhost/stub resolvers
+		if strings.HasPrefix(addr, "127.") {
+			continue
+		}
+		servers = append(servers, addr)
+	}
+	return servers
+}
+
+// runWithNetFilter runs a command in a network-filtered namespace using slirp4netns.
+func (p *LinuxPlatform) runWithNetFilter(profile domain.SandboxProfile, cmd string, args []string) error {
+	allowedIPs := resolveAllowedIPs(profile.Config.AllowNet)
+	dnsServers := getSystemDNS()
+	helpers.Log.Info().
+		Strs("allowed_ips", allowedIPs).
+		Strs("dns_servers", dnsServers).
+		Msg("starting network-filtered sandbox")
+
+	innerScript := buildNetFilterScript(allowedIPs, dnsServers, profile, cmd, args)
+
+	sandbox := exec.Command("unshare", "--user", "--map-root-user", "--net",
+		"--mount", "--pid", "--fork", "--", "sh", "-c", innerScript)
+	sandbox.Stdin = os.Stdin
+	sandbox.Stdout = os.Stdout
+	sandbox.Stderr = os.Stderr
+	if err := sandbox.Start(); err != nil {
+		return fmt.Errorf("failed to start sandbox: %w", err)
 	}
 
-	unshareArgs = append(unshareArgs, "--")
+	slirp := exec.Command("slirp4netns", "--configure",
+		strconv.Itoa(sandbox.Process.Pid), "tap0")
+	if err := slirp.Start(); err != nil {
+		sandbox.Process.Kill()
+		sandbox.Wait()
+		return fmt.Errorf("failed to start slirp4netns: %w", err)
+	}
+	defer func() {
+		slirp.Process.Kill()
+		slirp.Wait()
+	}()
 
-	// Build the inner command that runs inside the namespace
-	// First overmount denied directories with empty tmpfs
+	return sandbox.Wait()
+}
+
+// buildNetFilterScript builds the shell script that runs inside the network namespace.
+func buildNetFilterScript(allowedIPs, dnsServers []string, profile domain.SandboxProfile, cmd string, args []string) string {
+	var sb strings.Builder
+
+	// Wait for tap0 interface to come up (slirp4netns creates it)
+	sb.WriteString("for i in $(seq 1 100); do ip addr show tap0 2>/dev/null | grep -q inet && break; sleep 0.05; done\n")
+
+	// Set up DNS: point resolv.conf at slirp4netns DNS forwarder (10.0.2.3)
+	sb.WriteString("echo 'nameserver 10.0.2.3' > /tmp/.aigate-resolv\n")
+	sb.WriteString("mount --bind /tmp/.aigate-resolv /etc/resolv.conf 2>/dev/null || ")
+	sb.WriteString("mount --bind /tmp/.aigate-resolv $(readlink -f /etc/resolv.conf) 2>/dev/null || true\n")
+
+	// iptables rules: allow loopback + DNS + allowed IPs, reject the rest
+	sb.WriteString("iptables -A OUTPUT -o lo -j ACCEPT\n")
+	sb.WriteString("iptables -A OUTPUT -p udp --dport 53 -j ACCEPT\n")
+	sb.WriteString("iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT\n")
+
+	// Allow traffic to upstream DNS servers (needed for slirp4netns forwarding)
+	for _, dns := range dnsServers {
+		sb.WriteString(fmt.Sprintf("iptables -A OUTPUT -d %s -j ACCEPT\n", dns))
+	}
+
+	for _, ip := range allowedIPs {
+		sb.WriteString(fmt.Sprintf("iptables -A OUTPUT -d %s -j ACCEPT\n", ip))
+	}
+	sb.WriteString("iptables -A OUTPUT -j REJECT\n")
+
+	// Mount overrides for deny_read
+	sb.WriteString(buildMountOverrides(profile))
+
+	// Execute the target command
+	sb.WriteString("exec ")
+	sb.WriteString(shellEscape(cmd, args))
+	sb.WriteString("\n")
+
+	return sb.String()
+}
+
+// buildMountOverrides generates shell commands to overmount denied paths.
+func buildMountOverrides(profile domain.SandboxProfile) string {
 	var mountCmds []string
 	for _, pattern := range profile.Config.DenyRead {
 		paths, _ := resolvePatterns([]string{pattern}, profile.WorkDir)
@@ -200,17 +362,19 @@ func (p *LinuxPlatform) RunSandboxed(profile domain.SandboxProfile, cmd string, 
 			}
 		}
 	}
-
-	// Build shell command: mount overrides then exec the target command
-	var shellCmd string
 	if len(mountCmds) > 0 {
-		shellCmd = strings.Join(mountCmds, " && ") + " && "
+		return strings.Join(mountCmds, " && ") + " && "
 	}
-	shellCmd += cmd
-	for _, a := range args {
-		shellCmd += " " + a
-	}
+	return ""
+}
 
-	fullArgs := append(unshareArgs, "sh", "-c", shellCmd)
-	return p.exec.RunPassthrough("unshare", fullArgs...)
+// shellEscape builds a shell command string from a command and its arguments.
+func shellEscape(cmd string, args []string) string {
+	var sb strings.Builder
+	sb.WriteString(cmd)
+	for _, a := range args {
+		sb.WriteString(" ")
+		sb.WriteString(a)
+	}
+	return sb.String()
 }

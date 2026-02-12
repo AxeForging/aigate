@@ -178,7 +178,7 @@ Project config merges with global (extends, does not replace).
 ### Linux
 - **File isolation**: POSIX ACLs via `setfacl` deny the `ai-agents` group read access
 - **Process isolation**: Mount namespaces overmount sensitive directories with empty tmpfs
-- **Network isolation**: Network namespaces restrict egress to allowed domains
+- **Network isolation**: Network namespaces + iptables restrict egress to allowed domains. Requires `slirp4netns` (`dnf install slirp4netns` / `apt install slirp4netns`). Falls back to unrestricted networking if not installed.
 - **PID isolation**: PID namespaces hide host processes
 - **Resource limits**: cgroups v2 enforce memory, CPU, and PID limits
 
