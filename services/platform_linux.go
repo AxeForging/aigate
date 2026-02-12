@@ -401,24 +401,39 @@ func buildNetFilterScript(allowNetHosts, dnsServers []string, profile domain.San
 }
 
 // buildMountOverrides generates shell commands to overmount denied paths.
+// Files are replaced with a marker containing an explicit deny message so AI
+// agents understand why the content is unavailable. Directories get a tmpfs
+// with a .aigate-denied marker file.
 func buildMountOverrides(profile domain.SandboxProfile) string {
 	var mountCmds []string
+	hasFileDeny := false
+
 	for _, pattern := range profile.Config.DenyRead {
 		paths, _ := resolvePatterns([]string{pattern}, profile.WorkDir)
 		for _, path := range paths {
 			if info, err := os.Stat(path); err == nil {
 				if info.IsDir() {
-					mountCmds = append(mountCmds, fmt.Sprintf("mount -t tmpfs -o ro,size=0 tmpfs %s", path))
+					// Mount tmpfs writable, write marker, remount read-only
+					mountCmds = append(mountCmds, fmt.Sprintf(
+						"mount -t tmpfs -o size=4k tmpfs %s && printf '[aigate] access denied: this directory is protected by sandbox policy\\n' > %s/.aigate-denied && mount -o remount,ro %s",
+						path, path, path))
 				} else {
-					mountCmds = append(mountCmds, fmt.Sprintf("mount --bind /dev/null %s", path))
+					hasFileDeny = true
+					mountCmds = append(mountCmds, fmt.Sprintf("mount --bind /tmp/.aigate-denied %s", path))
 				}
 			}
 		}
 	}
-	if len(mountCmds) > 0 {
-		return strings.Join(mountCmds, " && ") + " && "
+
+	var sb strings.Builder
+	if hasFileDeny {
+		sb.WriteString("printf '[aigate] access denied: this file is protected by sandbox policy\\n' > /tmp/.aigate-denied && ")
 	}
-	return ""
+	if len(mountCmds) > 0 {
+		sb.WriteString(strings.Join(mountCmds, " && "))
+		sb.WriteString(" && ")
+	}
+	return sb.String()
 }
 
 // shellEscape builds a shell command string from a command and its arguments.
