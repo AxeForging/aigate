@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/AxeForging/aigate/domain"
@@ -193,8 +194,19 @@ func (p *LinuxPlatform) runUnshare(profile domain.SandboxProfile, cmd string, ar
 		"--",
 	}
 
-	shellCmd := buildPolicyFile(profile) + buildMountOverrides(profile) + shellEscape(cmd, args)
-	fullArgs := append(unshareArgs, "sh", "-c", shellCmd)
+	var sb strings.Builder
+	// Ensure inherited mounts are private so bind mounts work in all environments.
+	// Modern unshare --mount does this (util-linux 2.27+), but be explicit for safety.
+	sb.WriteString("mount --make-rprivate / 2>/dev/null || true\n")
+	sb.WriteString(buildPolicyFile(profile))
+	sb.WriteString(buildConfigDirOverride())
+	sb.WriteString(buildMountOverrides(profile))
+	sb.WriteString(buildExecDenyOverrides(profile))
+	sb.WriteString("exec ")
+	sb.WriteString(shellEscape(cmd, args))
+	sb.WriteString("\n")
+
+	fullArgs := append(unshareArgs, "sh", "-c", sb.String())
 	return p.exec.RunPassthrough("unshare", fullArgs...)
 }
 
@@ -348,6 +360,9 @@ func buildOrchestrationScript(innerScript string) string {
 func buildNetFilterScript(allowNetHosts, dnsServers []string, profile domain.SandboxProfile, cmd string, args []string) string {
 	var sb strings.Builder
 
+	// Ensure inherited mounts are private so bind mounts work in all environments.
+	sb.WriteString("mount --make-rprivate / 2>/dev/null || true\n")
+
 	// Remount /proc so it reflects the new PID namespace.
 	// Without this, /proc/self is stale and glibc's NSS/dlopen fails with
 	// "fatal library error, lookup self".
@@ -391,7 +406,9 @@ func buildNetFilterScript(allowNetHosts, dnsServers []string, profile domain.San
 
 	// Write policy file + mount overrides (deny_read markers point here)
 	sb.WriteString(buildPolicyFile(profile))
+	sb.WriteString(buildConfigDirOverride())
 	sb.WriteString(buildMountOverrides(profile))
+	sb.WriteString(buildExecDenyOverrides(profile))
 
 	// Execute the target command
 	sb.WriteString("exec ")
@@ -414,7 +431,7 @@ func buildPolicyFile(profile domain.SandboxProfile) string {
 	}
 	if len(profile.Config.DenyExec) > 0 {
 		sb.WriteString(fmt.Sprintf("printf 'deny_exec: %s\\n'\n", strings.Join(profile.Config.DenyExec, ", ")))
-		sb.WriteString("printf 'These commands are blocked before the sandbox starts.\\n\\n'\n")
+		sb.WriteString("printf 'These commands are blocked both before and inside the sandbox.\\n\\n'\n")
 	}
 	if len(profile.Config.AllowNet) > 0 {
 		sb.WriteString(fmt.Sprintf("printf 'allow_net: %s\\n'\n", strings.Join(profile.Config.AllowNet, ", ")))
@@ -429,38 +446,133 @@ func buildPolicyFile(profile domain.SandboxProfile) string {
 // agents understand why the content is unavailable. Directories get a tmpfs
 // with a .aigate-denied marker file. Both point to /tmp/.aigate-policy for
 // the full restriction list.
+//
+// Each mount is independent — a failure to mount one path does not prevent
+// mounting others or executing subsequent sandbox setup.
 func buildMountOverrides(profile domain.SandboxProfile) string {
 	const denyMsg = "[aigate] access denied: this file is protected by sandbox policy. See /tmp/.aigate-policy for all active restrictions."
 	const dirMsg = "[aigate] access denied: this directory is protected by sandbox policy. Run 'cat /tmp/.aigate-policy' to see all active restrictions."
 
-	var mountCmds []string
-	hasFileDeny := false
+	type mountEntry struct {
+		isDir bool
+		path  string
+	}
 
+	var entries []mountEntry
 	for _, pattern := range profile.Config.DenyRead {
 		paths, _ := resolvePatterns([]string{pattern}, profile.WorkDir)
 		for _, path := range paths {
 			if info, err := os.Stat(path); err == nil {
-				if info.IsDir() {
-					mountCmds = append(mountCmds, fmt.Sprintf(
-						"mount -t tmpfs -o size=4k tmpfs %s && printf '%s\\n' > %s/.aigate-denied && mount -o remount,ro %s",
-						path, dirMsg, path, path))
-				} else {
-					hasFileDeny = true
-					mountCmds = append(mountCmds, fmt.Sprintf("mount --bind /tmp/.aigate-denied %s", path))
-				}
+				entries = append(entries, mountEntry{isDir: info.IsDir(), path: path})
 			}
 		}
 	}
 
+	if len(entries) == 0 {
+		return ""
+	}
+
 	var sb strings.Builder
-	if hasFileDeny {
-		sb.WriteString(fmt.Sprintf("printf '%s\\n' > /tmp/.aigate-denied && ", denyMsg))
+
+	// Create the deny marker file for file-level overrides (standalone command).
+	hasFile := false
+	for _, e := range entries {
+		if !e.isDir {
+			hasFile = true
+			break
+		}
 	}
-	if len(mountCmds) > 0 {
-		sb.WriteString(strings.Join(mountCmds, " && "))
-		sb.WriteString(" && ")
+	if hasFile {
+		sb.WriteString(fmt.Sprintf("printf '%s\\n' > /tmp/.aigate-denied\n", denyMsg))
 	}
+
+	// Each mount is independent — failures don't cascade.
+	for _, e := range entries {
+		if e.isDir {
+			sb.WriteString(fmt.Sprintf(
+				"{ mount -t tmpfs -o size=4k tmpfs \"%s\" && printf '%s\\n' > \"%s/.aigate-denied\" && mount -o remount,ro \"%s\"; } 2>/dev/null || true\n",
+				e.path, dirMsg, e.path, e.path))
+		} else {
+			sb.WriteString(fmt.Sprintf("mount --bind /tmp/.aigate-denied \"%s\" 2>/dev/null || true\n", e.path))
+		}
+	}
+
 	return sb.String()
+}
+
+// buildExecDenyOverrides generates shell commands to kernel-enforce deny_exec
+// rules inside the sandbox using mount --bind overlays.
+//
+// Full command blocks (e.g. "curl"): creates a deny script and bind-mounts it
+// over every instance of the binary found in $PATH directories.
+//
+// Subcommand blocks (e.g. "kubectl delete"): creates a wrapper script with a
+// case-statement that checks arguments, copies the original binary aside, and
+// bind-mounts the wrapper over the original.
+func buildExecDenyOverrides(profile domain.SandboxProfile) string {
+	if len(profile.Config.DenyExec) == 0 {
+		return ""
+	}
+
+	var fullBlocks []string
+	subBlocks := make(map[string][]string) // base command -> list of denied subcommands
+
+	for _, entry := range profile.Config.DenyExec {
+		parts := strings.SplitN(entry, " ", 2)
+		if len(parts) == 2 {
+			subBlocks[parts[0]] = append(subBlocks[parts[0]], parts[1])
+		} else {
+			fullBlocks = append(fullBlocks, entry)
+		}
+	}
+
+	var sb strings.Builder
+
+	// Create the deny script for full command blocks (standalone command).
+	if len(fullBlocks) > 0 {
+		sb.WriteString("printf '#!/bin/sh\\necho \"[aigate] blocked: this command is denied by sandbox policy\" >&2\\nexit 126\\n' > /tmp/.aigate-deny-exec && chmod +x /tmp/.aigate-deny-exec\n")
+
+		// For each denied command, find all instances in PATH and overlay them.
+		// Each command is independent — a failure doesn't affect others.
+		for _, cmd := range fullBlocks {
+			sb.WriteString(fmt.Sprintf(
+				"for _d in $(echo \"$PATH\" | tr ':' ' '); do [ -x \"$_d/%s\" ] && mount --bind /tmp/.aigate-deny-exec \"$_d/%s\" 2>/dev/null; done\n",
+				cmd, cmd))
+		}
+	}
+
+	// Create wrapper scripts for subcommand blocks.
+	// Each wrapper is independent — a failure doesn't affect others.
+	for baseCmd, subs := range subBlocks {
+		// Build case statement arms for denied subcommands
+		var caseArms strings.Builder
+		for _, sub := range subs {
+			caseArms.WriteString(fmt.Sprintf("%s) echo \"[aigate] blocked: '%s %s' is denied by sandbox policy\" >&2; exit 126;; ", sub, baseCmd, sub))
+		}
+
+		wrapper := fmt.Sprintf("#!/bin/sh\nfor _a in \"$@\"; do case \"$_a\" in %s*) break;; esac; done\nexec /tmp/.aigate-orig-%s \"$@\"\n",
+			caseArms.String(), baseCmd)
+
+		encoded := base64.StdEncoding.EncodeToString([]byte(wrapper))
+
+		// Find the original binary, copy it aside, then mount wrapper over it
+		sb.WriteString(fmt.Sprintf(
+			"_orig=$(command -v %s 2>/dev/null) && if [ -n \"$_orig\" ]; then cp \"$_orig\" /tmp/.aigate-orig-%s && printf '%%s' '%s' | base64 -d > /tmp/.aigate-wrap-%s && chmod +x /tmp/.aigate-wrap-%s && mount --bind /tmp/.aigate-wrap-%s \"$_orig\" 2>/dev/null; fi\n",
+			baseCmd, baseCmd, encoded, baseCmd, baseCmd, baseCmd))
+	}
+
+	return sb.String()
+}
+
+// buildConfigDirOverride generates a shell command to hide ~/.aigate/ inside the
+// sandbox by mounting a tmpfs over it.
+func buildConfigDirOverride() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	configDir := filepath.Join(home, ".aigate")
+	return fmt.Sprintf("mount -t tmpfs -o size=4k tmpfs \"%s\" 2>/dev/null || true\n", configDir)
 }
 
 // shellEscape builds a shell command string from a command and its arguments.
