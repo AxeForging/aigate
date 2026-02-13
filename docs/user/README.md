@@ -257,9 +257,9 @@ Restricts outbound connections to domains listed in `allow_net`:
    - **Linux**: Full command blocks use `mount --bind` to overlay denied binaries with a deny script. Subcommand blocks use wrapper scripts that check arguments before forwarding to the original binary.
    - **macOS**: Full command blocks use Seatbelt `(deny process-exec)` rules enforced by Sandbox.kext. Subcommand blocks rely on the pre-sandbox check.
 
-### Resource limits
+### Resource limits *(coming soon)*
 
-cgroups v2 enforce memory, CPU, and PID limits (Linux only).
+Resource limits (`max_memory`, `max_cpu_percent`, `max_pids`) are defined in the config but **not yet enforced**. Enforcement via cgroups v2 controllers is planned for a future release.
 
 ## Troubleshooting
 
