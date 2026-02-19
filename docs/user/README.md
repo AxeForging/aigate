@@ -8,7 +8,29 @@ aigate creates an OS-level sandbox for AI coding agents. When you use Claude Cod
 - **Execute** dangerous commands (curl, wget, ssh)
 - **Access** unauthorized network endpoints
 
-Unlike application-level restrictions that can be bypassed, aigate uses kernel-enforced isolation (Linux ACLs + namespaces, macOS ACLs + sandbox-exec). The AI tool physically cannot access what you deny.
+Unlike application-level restrictions that can be bypassed, aigate uses kernel-enforced isolation (Linux namespaces + iptables, macOS sandbox-exec). The AI tool physically cannot access what you deny.
+
+## Prerequisites
+
+| | Linux | macOS |
+|---|---|---|
+| **Required** | `setfacl` (usually pre-installed) | None (uses built-in sandbox-exec) |
+| **For network filtering** | `slirp4netns` | None (uses built-in Seatbelt) |
+
+Install `slirp4netns` on Linux if you use `allow_net`:
+
+```sh
+# Fedora / RHEL
+sudo dnf install slirp4netns
+
+# Ubuntu / Debian
+sudo apt install slirp4netns
+
+# Arch
+sudo pacman -S slirp4netns
+```
+
+If `slirp4netns` is not installed, aigate logs a warning and runs without network filtering.
 
 ## Install
 
@@ -55,7 +77,7 @@ aigate run -- aider
 
 ### init
 
-Creates the sandbox group (`ai-agents`), user (`ai-runner`), and default config.
+Creates the sandbox group (`ai-agents`), user (`ai-runner`), and default config. Safe to re-run (skips existing group/user).
 
 ```sh
 sudo aigate init                           # Default setup
@@ -175,16 +197,51 @@ Project config merges with global (extends, does not replace).
 
 ## How It Works
 
-### Linux
-- **File isolation**: POSIX ACLs via `setfacl` deny the `ai-agents` group read access
-- **Process isolation**: Mount namespaces overmount sensitive directories with empty tmpfs
-- **Network isolation**: Network namespaces restrict egress to allowed domains
-- **PID isolation**: PID namespaces hide host processes
-- **Resource limits**: cgroups v2 enforce memory, CPU, and PID limits
+Architecture diagrams are in [`docs/diagrams/`](../diagrams/).
 
-### macOS
-- **File isolation**: macOS ACLs via `chmod +a` with explicit deny entries
-- **Process sandboxing**: `sandbox-exec` Seatbelt profiles restrict file and network access
+### File isolation
+
+Two layers working together for defense-in-depth:
+
+1. **Persistent ACLs** (applied when you run `aigate deny read`):
+   - **Linux**: POSIX ACLs via `setfacl` deny the `ai-agents` group read access
+   - **macOS**: Extended ACLs via `chmod +a` with explicit deny entries
+2. **Runtime overrides** (applied when you run `aigate run`):
+   - **Linux**: Mount namespaces overmount directories with empty tmpfs, files with `/dev/null`
+   - **macOS**: Seatbelt `file-read*` deny rules in the sandbox profile
+
+![File Isolation](../diagrams/file-isolation.png)
+
+### Network isolation
+
+Restricts outbound connections to domains listed in `allow_net`:
+
+- **Linux**: User namespace + network namespace + `slirp4netns` for user-mode networking + `iptables` OUTPUT rules. Hostnames are resolved inside the namespace so iptables IPs match what the sandboxed process sees. Requires `slirp4netns` (falls back to unrestricted if not installed). No root needed.
+- **macOS**: `sandbox-exec` Seatbelt profiles with `(deny network-outbound)` and per-host `(allow network-outbound (remote ip ...))` rules. Kernel-enforced via Sandbox.kext.
+
+**Linux**:
+
+![Linux Network Isolation](../diagrams/linux-network.png)
+
+**macOS**:
+
+![macOS Network Isolation](../diagrams/macos-network.png)
+
+### Process isolation (Linux)
+
+- **User namespace**: Maps calling user to UID 0 inside the namespace, giving capabilities for mount/net operations without real root
+- **PID namespace**: Sandboxed process sees itself as PID 1, cannot see or signal host processes. `/proc` is remounted to match
+- **Mount namespace**: Enables filesystem overrides without affecting the host
+
+![Linux Process Isolation](../diagrams/linux-process.png)
+
+### Command blocking
+
+`deny_exec` rules are checked **before** entering the sandbox. If the command (or a subcommand like `kubectl delete`) is in the deny list, aigate refuses to launch it. This is an application-level check, not a kernel feature.
+
+### Resource limits
+
+cgroups v2 enforce memory, CPU, and PID limits (Linux only).
 
 ## Troubleshooting
 
@@ -196,6 +253,12 @@ If you see "Failed to apply ACLs", the AI agent group may not exist yet. Run `su
 
 ### "aigate not initialized"
 Run `sudo aigate init` to create the sandbox group, user, and default config.
+
+### "slirp4netns not found" warning
+Install `slirp4netns` for network filtering on Linux (see [Prerequisites](#prerequisites)). Without it, `allow_net` rules are ignored and the sandboxed process has unrestricted network access.
+
+### Allowed hosts still blocked
+If hosts in `allow_net` are being rejected, DNS inside the sandbox may not have been ready in time. Check that `slirp4netns` is installed and working. Run with `AIGATE_LOG_LEVEL=debug` for detailed output.
 
 ## Exit Codes
 

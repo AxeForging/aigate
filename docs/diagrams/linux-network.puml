@@ -1,0 +1,77 @@
+@startuml linux-network
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName Inter
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam ArrowColor #444444
+skinparam RectangleBorderColor #888888
+skinparam PackageBorderColor #666666
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #FBC02D
+
+title **Linux Network Isolation**\nslirp4netns + iptables (no root required)
+
+cloud "Internet" as internet #E0E0E0
+
+rectangle "User Namespace\n(outer unshare --user)" as userns #FFF3E0 {
+
+  rectangle "**slirp4netns**\nuser-mode networking\n(host network + user ns caps)" as slirp #B3E5FC
+
+  rectangle "Network Namespace\n(inner unshare --net)" as netns #FFCDD2 {
+
+    rectangle "**tap0** (10.0.2.100)" as tap0 #EF9A9A
+
+    rectangle "**iptables OUTPUT chain**" as iptables #EF9A9A {
+      rectangle "ACCEPT  lo (loopback)" as r1 #FFFFFF
+      rectangle "ACCEPT  UDP/TCP :53 (DNS)" as r2 #FFFFFF
+      rectangle "ACCEPT  upstream DNS servers" as r3 #FFFFFF
+      rectangle "ACCEPT  resolved AllowNet IPs" as r4 #C8E6C9
+      rectangle "REJECT  everything else" as r5 #FFCDD2
+    }
+
+    rectangle "**Sandboxed Process**\nclaude / cursor / aider" as proc #CE93D8
+  }
+}
+
+proc -down-> iptables : outbound traffic
+iptables -down-> tap0 : allowed
+tap0 <-left-> slirp : tap attachment\nvia setns()
+slirp <-up-> internet : forwarded
+
+note right of slirp
+  Runs **inside** user namespace
+  (has CAP_SYS_ADMIN) but in the
+  **host** network namespace.
+
+  Creates tap0 in sandbox net ns,
+  forwards packets to real network.
+
+  Built-in DNS forwarder: 10.0.2.3
+end note
+
+note right of r4
+  Hosts resolved **inside** namespace
+  via getent ahostsv4 (same DNS the
+  sandboxed process will use).
+  Each host retries 3x to handle
+  DNS startup delay.
+end note
+
+note left of tap0
+  **resolv.conf** bind-mounted
+  to point at 10.0.2.3
+  (slirp4netns DNS forwarder)
+end note
+
+note right of proc
+  **Dispatch logic:**
+  AllowNet + slirp4netns found
+  -> runWithNetFilter()
+  AllowNet + no slirp4netns
+  -> warn, run unrestricted
+  No AllowNet
+  -> run unrestricted
+end note
+
+@enduml
