@@ -60,14 +60,17 @@ go install github.com/AxeForging/aigate@latest
 ## Quick Start
 
 ```sh
-# 1. Initialize (creates OS group + user + default config)
-sudo aigate init
+# 1. System setup (creates OS group + user, requires sudo)
+sudo aigate setup
 
-# 2. Add custom restrictions
+# 2. Create default config
+aigate init
+
+# 3. Add custom restrictions
 aigate deny read .env secrets/ terraform.tfstate
 aigate deny exec curl wget ssh
 
-# 3. Run your AI tool inside the sandbox
+# 4. Run your AI tool inside the sandbox
 aigate run -- claude
 aigate run -- cursor
 aigate run -- aider
@@ -75,14 +78,22 @@ aigate run -- aider
 
 ## Commands
 
-### init
+### setup
 
-Creates the sandbox group (`ai-agents`), user (`ai-runner`), and default config. Safe to re-run (skips existing group/user).
+Creates the OS group (`ai-agents`) and user (`ai-runner`). Requires `sudo`. Safe to re-run (skips existing group/user).
 
 ```sh
-sudo aigate init                           # Default setup
-sudo aigate init --group mygroup --user myuser  # Custom names
-sudo aigate init --force                   # Reinitialize
+sudo aigate setup                                # Default group/user
+sudo aigate setup --group mygroup --user myuser  # Custom names
+```
+
+### init
+
+Creates default config at `~/.aigate/config.yaml`. Does not require sudo.
+
+```sh
+aigate init                    # Create default config
+aigate init --force            # Re-create config (overwrites existing)
 ```
 
 ### deny
@@ -246,13 +257,13 @@ cgroups v2 enforce memory, CPU, and PID limits (Linux only).
 ## Troubleshooting
 
 ### "operation requires elevated privileges"
-`init` and `reset` need `sudo` to create/delete OS users and groups. `deny`, `allow`, `run`, and `status` do not.
+`setup` and `reset` need `sudo` to create/delete OS users and groups. `init`, `deny`, `allow`, `run`, and `status` do not.
 
 ### ACL warnings on deny/allow
-If you see "Failed to apply ACLs", the AI agent group may not exist yet. Run `sudo aigate init` first.
+If you see "Failed to apply ACLs", the AI agent group may not exist yet. Run `sudo aigate setup` first.
 
 ### "aigate not initialized"
-Run `sudo aigate init` to create the sandbox group, user, and default config.
+Run `sudo aigate setup` to create the sandbox group and user, then `aigate init` to create the default config.
 
 ### "slirp4netns not found" warning
 Install `slirp4netns` for network filtering on Linux (see [Prerequisites](#prerequisites)). Without it, `allow_net` rules are ignored and the sandboxed process has unrestricted network access.

@@ -26,7 +26,9 @@ func main() {
 	ruleSvc := services.NewRuleService()
 	runnerSvc := services.NewRunnerService(platform)
 
-	initAction := actions.NewInitAction(platform, configSvc)
+	initAction := actions.NewInitAction(configSvc)
+	setupAction := actions.NewSetupAction(platform, configSvc)
+	helpAIAction := actions.NewHelpAIAction()
 	denyAction := actions.NewDenyAction(ruleSvc, configSvc, platform)
 	allowAction := actions.NewAllowAction(ruleSvc, configSvc, platform)
 	runAction := actions.NewRunAction(runnerSvc, configSvc, platform)
@@ -42,9 +44,15 @@ func main() {
 		{
 			Name:    "init",
 			Aliases: []string{"i"},
-			Usage:   "Create AI sandbox group, user, and default config",
-			Flags:   []cli.Flag{groupFlag, userFlag, verboseFlag, forceFlag},
+			Usage:   "Create default config (~/.aigate/config.yaml)",
+			Flags:   []cli.Flag{verboseFlag, forceFlag},
 			Action:  initAction.Execute,
+		},
+		{
+			Name:   "setup",
+			Usage:  "Create OS group and user for sandbox (requires sudo)",
+			Flags:  []cli.Flag{groupFlag, userFlag, verboseFlag},
+			Action: setupAction.Execute,
 		},
 		{
 			Name:  "deny",
@@ -113,6 +121,11 @@ func main() {
 			Usage:  "Remove sandbox group, user, and all rules",
 			Flags:  []cli.Flag{forceFlag, verboseFlag},
 			Action: resetAction.Execute,
+		},
+		{
+			Name:  "help-ai",
+			Usage: "Show AI-friendly usage examples",
+			Action: helpAIAction.Execute,
 		},
 		{
 			Name:  "version",
