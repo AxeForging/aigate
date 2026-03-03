@@ -163,3 +163,71 @@ func TestAppendUnique(t *testing.T) {
 		t.Errorf("appendUnique len = %d, want 5", len(result))
 	}
 }
+
+func TestInitDefaultConfig_TildePrefixes(t *testing.T) {
+	svc := NewConfigService()
+	cfg := svc.InitDefaultConfig()
+
+	tildePatterns := []string{"~/.ssh/", "~/.aws/", "~/.gcloud/", "~/.kube/config", "~/.npmrc", "~/.pypirc"}
+	for _, want := range tildePatterns {
+		found := false
+		for _, got := range cfg.DenyRead {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DenyRead missing %q", want)
+		}
+	}
+
+	// These should NOT have tilde prefix (they are project-relative)
+	projectPatterns := []string{".env", ".env.*", "secrets/", "credentials/"}
+	for _, want := range projectPatterns {
+		found := false
+		for _, got := range cfg.DenyRead {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DenyRead missing project-relative pattern %q", want)
+		}
+	}
+}
+
+func TestInitDefaultConfig_SubcommandExamples(t *testing.T) {
+	svc := NewConfigService()
+	cfg := svc.InitDefaultConfig()
+
+	subcommandExamples := []string{"kubectl delete", "kubectl exec"}
+	for _, want := range subcommandExamples {
+		found := false
+		for _, got := range cfg.DenyExec {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DenyExec missing subcommand example %q", want)
+		}
+	}
+
+	// Also check that full command blocks are still present
+	fullCommands := []string{"curl", "wget", "nc", "ssh", "scp"}
+	for _, want := range fullCommands {
+		found := false
+		for _, got := range cfg.DenyExec {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DenyExec missing full command %q", want)
+		}
+	}
+}

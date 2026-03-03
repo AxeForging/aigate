@@ -5,6 +5,8 @@ package services
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/AxeForging/aigate/domain"
@@ -218,6 +220,25 @@ func generateSeatbeltProfile(profile domain.SandboxProfile) string {
 			} else {
 				sb.WriteString(fmt.Sprintf("(deny file-read* (literal %q))\n", path))
 			}
+		}
+	}
+
+	// Deny read access to aigate config directory
+	if home, err := os.UserHomeDir(); err == nil {
+		configDir := filepath.Join(home, ".aigate")
+		sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", configDir))
+	}
+
+	// Deny execution of blocked commands
+	for _, entry := range profile.Config.DenyExec {
+		parts := strings.SplitN(entry, " ", 2)
+		if len(parts) == 2 {
+			// Subcommand blocks can't be enforced via Seatbelt; pre-sandbox check handles these
+			continue
+		}
+		// Full command block: find all instances via PATH
+		if path, err := exec.LookPath(entry); err == nil {
+			sb.WriteString(fmt.Sprintf("(deny process-exec (literal %q))\n", path))
 		}
 	}
 

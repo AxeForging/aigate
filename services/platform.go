@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/AxeForging/aigate/domain"
 )
@@ -57,11 +58,18 @@ func DetectPlatformWithExecutor(exec Executor) Platform {
 }
 
 // resolvePatterns expands glob patterns relative to workDir into absolute paths.
+// Patterns starting with ~/ are expanded to the user's home directory.
 func resolvePatterns(patterns []string, workDir string) ([]string, error) {
 	var resolved []string
 	for _, pattern := range patterns {
 		var absPattern string
-		if filepath.IsAbs(pattern) {
+		if strings.HasPrefix(pattern, "~/") {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return nil, fmt.Errorf("failed to resolve home directory for %q: %w", pattern, err)
+			}
+			absPattern = filepath.Join(home, pattern[2:])
+		} else if filepath.IsAbs(pattern) {
 			absPattern = pattern
 		} else {
 			absPattern = filepath.Join(workDir, pattern)

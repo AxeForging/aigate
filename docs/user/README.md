@@ -166,11 +166,14 @@ deny_read:
   - ".env.*"
   - "secrets/"
   - "credentials/"
-  - ".ssh/"
+  - "~/.ssh/"
   - "*.pem"
   - "*.key"
-  - ".aws/"
-  - ".gcloud/"
+  - "~/.aws/"
+  - "~/.gcloud/"
+  - "~/.kube/config"
+  - "~/.npmrc"
+  - "~/.pypirc"
 deny_exec:
   - "curl"
   - "wget"
@@ -178,8 +181,7 @@ deny_exec:
   - "ssh"
   - "scp"
   - "kubectl delete"
-  - "kubectl create"
-  - "docker rm"
+  - "kubectl exec"
 allow_net:
   - "api.anthropic.com"
   - "api.openai.com"
@@ -248,11 +250,16 @@ Restricts outbound connections to domains listed in `allow_net`:
 
 ### Command blocking
 
-`deny_exec` rules are checked **before** entering the sandbox. If the command (or a subcommand like `kubectl delete`) is in the deny list, aigate refuses to launch it. This is an application-level check, not a kernel feature.
+`deny_exec` rules are enforced at two layers for defense-in-depth:
 
-### Resource limits
+1. **Pre-sandbox check**: Before entering the sandbox, aigate checks the command (and subcommands like `kubectl delete`) against the deny list and refuses to launch blocked commands.
+2. **Kernel-level enforcement inside the sandbox**:
+   - **Linux**: Full command blocks use `mount --bind` to overlay denied binaries with a deny script. Subcommand blocks use wrapper scripts that check arguments before forwarding to the original binary.
+   - **macOS**: Full command blocks use Seatbelt `(deny process-exec)` rules enforced by Sandbox.kext. Subcommand blocks rely on the pre-sandbox check.
 
-cgroups v2 enforce memory, CPU, and PID limits (Linux only).
+### Resource limits *(coming soon)*
+
+Resource limits (`max_memory`, `max_cpu_percent`, `max_pids`) are defined in the config but **not yet enforced**. Enforcement via cgroups v2 controllers is planned for a future release.
 
 ## Troubleshooting
 

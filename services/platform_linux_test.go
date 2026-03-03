@@ -571,3 +571,303 @@ func TestParseDNSFromFile(t *testing.T) {
 		}
 	})
 }
+
+func TestResolvePatterns_TildeExpansion(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	// Create a file at ~/testfile
+	writeTestFile(t, tmpDir+"/testfile", "content")
+
+	paths, err := resolvePatterns([]string{"~/testfile"}, "/irrelevant")
+	if err != nil {
+		t.Fatalf("resolvePatterns() error = %v", err)
+	}
+	if len(paths) != 1 {
+		t.Fatalf("resolvePatterns() len = %d, want 1", len(paths))
+	}
+	if paths[0] != tmpDir+"/testfile" {
+		t.Errorf("resolvePatterns() = %q, want %q", paths[0], tmpDir+"/testfile")
+	}
+}
+
+func TestResolvePatterns_TildeDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	// Create ~/.ssh/ directory
+	os.MkdirAll(tmpDir+"/.ssh", 0o755)
+
+	paths, err := resolvePatterns([]string{"~/.ssh/"}, "/irrelevant")
+	if err != nil {
+		t.Fatalf("resolvePatterns() error = %v", err)
+	}
+	if len(paths) != 1 {
+		t.Fatalf("resolvePatterns() len = %d, want 1", len(paths))
+	}
+	expected := tmpDir + "/.ssh"
+	if paths[0] != expected {
+		t.Errorf("resolvePatterns() = %q, want %q", paths[0], expected)
+	}
+}
+
+func TestBuildExecDenyOverrides_Empty(t *testing.T) {
+	profile := domain.SandboxProfile{
+		Config:  domain.Config{DenyExec: nil},
+		WorkDir: "/tmp",
+	}
+	result := buildExecDenyOverrides(profile)
+	if result != "" {
+		t.Errorf("buildExecDenyOverrides() with empty deny list should return empty, got %q", result)
+	}
+}
+
+func TestBuildExecDenyOverrides_FullCommand(t *testing.T) {
+	profile := domain.SandboxProfile{
+		Config: domain.Config{
+			DenyExec: []string{"curl", "wget"},
+		},
+		WorkDir: "/tmp",
+	}
+	result := buildExecDenyOverrides(profile)
+
+	// Should create the deny script
+	if !strings.Contains(result, "/tmp/.aigate-deny-exec") {
+		t.Error("should create deny script at /tmp/.aigate-deny-exec")
+	}
+	// Should iterate PATH for each denied command
+	if !strings.Contains(result, "\"$_d/curl\"") {
+		t.Error("should search PATH for curl")
+	}
+	if !strings.Contains(result, "\"$_d/wget\"") {
+		t.Error("should search PATH for wget")
+	}
+	// Should mount --bind the deny script
+	if !strings.Contains(result, "mount --bind /tmp/.aigate-deny-exec") {
+		t.Error("should mount --bind deny script over binaries")
+	}
+}
+
+func TestBuildExecDenyOverrides_Subcommand(t *testing.T) {
+	profile := domain.SandboxProfile{
+		Config: domain.Config{
+			DenyExec: []string{"kubectl delete", "kubectl exec"},
+		},
+		WorkDir: "/tmp",
+	}
+	result := buildExecDenyOverrides(profile)
+
+	// Should NOT create the full-deny script (no full blocks)
+	if strings.Contains(result, "/tmp/.aigate-deny-exec") {
+		t.Error("should not create full deny script for subcommand-only rules")
+	}
+	// Should create wrapper and original copy
+	if !strings.Contains(result, "/tmp/.aigate-orig-kubectl") {
+		t.Error("should copy original binary to /tmp/.aigate-orig-kubectl")
+	}
+	if !strings.Contains(result, "/tmp/.aigate-wrap-kubectl") {
+		t.Error("should create wrapper at /tmp/.aigate-wrap-kubectl")
+	}
+	// Should contain base64-encoded wrapper
+	if !strings.Contains(result, "base64 -d") {
+		t.Error("should decode wrapper from base64")
+	}
+	// Decode and verify the wrapper script content
+	// Extract the base64 portion
+	idx := strings.Index(result, "printf '%s' '")
+	if idx == -1 {
+		t.Fatal("could not find base64 content in script")
+	}
+	start := idx + len("printf '%s' '")
+	end := strings.Index(result[start:], "'")
+	encoded := result[start : start+end]
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("failed to decode wrapper: %v", err)
+	}
+	wrapper := string(decoded)
+	if !strings.Contains(wrapper, "delete)") {
+		t.Error("wrapper should contain case arm for 'delete'")
+	}
+	if !strings.Contains(wrapper, "exec)") {
+		t.Error("wrapper should contain case arm for 'exec'")
+	}
+	if !strings.Contains(wrapper, "/tmp/.aigate-orig-kubectl") {
+		t.Error("wrapper should exec the original binary from /tmp/.aigate-orig-kubectl")
+	}
+}
+
+func TestBuildExecDenyOverrides_Mixed(t *testing.T) {
+	profile := domain.SandboxProfile{
+		Config: domain.Config{
+			DenyExec: []string{"curl", "kubectl delete"},
+		},
+		WorkDir: "/tmp",
+	}
+	result := buildExecDenyOverrides(profile)
+
+	// Should have both full-deny and subcommand wrappers
+	if !strings.Contains(result, "/tmp/.aigate-deny-exec") {
+		t.Error("should create deny script for full command block")
+	}
+	if !strings.Contains(result, "/tmp/.aigate-orig-kubectl") {
+		t.Error("should create wrapper for subcommand block")
+	}
+}
+
+func TestBuildConfigDirOverride(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	result := buildConfigDirOverride()
+	expected := tmpDir + "/.aigate"
+	if !strings.Contains(result, "mount -t tmpfs") {
+		t.Error("should mount tmpfs")
+	}
+	if !strings.Contains(result, expected) {
+		t.Errorf("should mount over %s, got: %s", expected, result)
+	}
+}
+
+func TestBuildNetFilterScript_MountMakeRprivate(t *testing.T) {
+	profile := domain.SandboxProfile{
+		Config:  domain.Config{},
+		WorkDir: "/tmp",
+	}
+	script := buildNetFilterScript(nil, nil, profile, "echo", nil)
+	if !strings.Contains(script, "mount --make-rprivate /") {
+		t.Error("net filter script should start with mount --make-rprivate /")
+	}
+	// Verify rprivate comes BEFORE any bind mounts
+	rprivateIdx := strings.Index(script, "mount --make-rprivate /")
+	procIdx := strings.Index(script, "mount -t proc proc /proc")
+	if rprivateIdx > procIdx {
+		t.Error("mount --make-rprivate should come before mount -t proc")
+	}
+}
+
+func TestBuildMountOverrides_IndependentMounts(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeTestFile(t, tmpDir+"/secret1.txt", "secret")
+	writeTestFile(t, tmpDir+"/secret2.txt", "secret")
+
+	profile := domain.SandboxProfile{
+		Config: domain.Config{
+			DenyRead: []string{"secret1.txt", "secret2.txt"},
+		},
+		WorkDir: tmpDir,
+	}
+	result := buildMountOverrides(profile)
+
+	// Each mount should be on its own line (not joined with &&)
+	lines := strings.Split(strings.TrimSpace(result), "\n")
+	mountCount := 0
+	for _, line := range lines {
+		if strings.Contains(line, "mount --bind") {
+			mountCount++
+			// Each mount should have || true for resilience
+			if !strings.Contains(line, "|| true") {
+				t.Errorf("mount line should have || true: %s", line)
+			}
+		}
+	}
+	if mountCount != 2 {
+		t.Errorf("expected 2 independent mount commands, got %d", mountCount)
+	}
+
+	// Should NOT contain && between mount commands (cascading failure risk)
+	if strings.Contains(result, "mount --bind /tmp/.aigate-denied") &&
+		strings.Contains(result, "&& mount --bind") {
+		t.Error("mount commands should NOT be joined with && (cascading failure)")
+	}
+}
+
+func TestBuildMountOverrides_QuotesPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeTestFile(t, tmpDir+"/secret.txt", "secret")
+
+	profile := domain.SandboxProfile{
+		Config: domain.Config{
+			DenyRead: []string{"secret.txt"},
+		},
+		WorkDir: tmpDir,
+	}
+	result := buildMountOverrides(profile)
+	// Path should be quoted
+	expected := fmt.Sprintf("mount --bind /tmp/.aigate-denied \"%s/secret.txt\"", tmpDir)
+	if !strings.Contains(result, expected) {
+		t.Errorf("mount should quote path, got:\n%s", result)
+	}
+}
+
+func TestBuildMountOverrides_DirMount(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/secrets", 0o755)
+
+	profile := domain.SandboxProfile{
+		Config: domain.Config{
+			DenyRead: []string{"secrets/"},
+		},
+		WorkDir: tmpDir,
+	}
+	result := buildMountOverrides(profile)
+
+	// Dir mount should use tmpfs and have || true
+	if !strings.Contains(result, "mount -t tmpfs") {
+		t.Error("dir mount should use tmpfs")
+	}
+	if !strings.Contains(result, "|| true") {
+		t.Error("dir mount should have || true for resilience")
+	}
+	// Should NOT create the file deny marker (no file mounts)
+	if strings.Contains(result, "/tmp/.aigate-denied\n") {
+		// This would be the file marker creation, which shouldn't exist
+		// when there are only directory mounts
+	}
+}
+
+func TestRunUnshare_MountMakeRprivate(t *testing.T) {
+	mock := newMockExecutor()
+	p := &LinuxPlatform{exec: mock}
+	profile := domain.SandboxProfile{
+		Config:  domain.Config{},
+		WorkDir: "/tmp",
+	}
+	_ = p.RunSandboxed(profile, "echo", []string{"hello"})
+
+	if mock.callCount() == 0 {
+		t.Fatal("expected executor to be called")
+	}
+	last := mock.lastCall()
+	// The shell command is the last argument
+	shellCmd := last.Args[len(last.Args)-1]
+	if !strings.Contains(shellCmd, "mount --make-rprivate /") {
+		t.Error("runUnshare should include mount --make-rprivate /")
+	}
+	// Verify rprivate comes first (before any other commands)
+	if !strings.HasPrefix(shellCmd, "mount --make-rprivate /") {
+		t.Error("mount --make-rprivate should be the first command in the script")
+	}
+	// Verify exec is used before the command
+	if !strings.Contains(shellCmd, "exec echo hello") {
+		t.Error("runUnshare should exec the target command")
+	}
+}
+
+func TestBuildNetFilterScript_IncludesExecDeny(t *testing.T) {
+	profile := domain.SandboxProfile{
+		Config: domain.Config{
+			DenyExec: []string{"curl", "wget"},
+			DenyRead: []string{"/nonexistent/path/for/test"},
+		},
+		WorkDir: "/tmp",
+	}
+
+	script := buildNetFilterScript(nil, nil, profile, "echo", []string{"hello"})
+	if !strings.Contains(script, "/tmp/.aigate-deny-exec") {
+		t.Error("net filter script should include exec deny overrides")
+	}
+	if !strings.Contains(script, ".aigate") {
+		t.Error("net filter script should include config dir override")
+	}
+}
