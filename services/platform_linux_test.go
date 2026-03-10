@@ -5,6 +5,7 @@ package services
 import (
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -46,6 +47,10 @@ func (m *mockExecutor) Run(name string, args ...string) ([]byte, error) {
 }
 
 func (m *mockExecutor) RunPassthrough(name string, args ...string) error {
+	return m.RunPassthroughWith(os.Stdout, os.Stderr, name, args...)
+}
+
+func (m *mockExecutor) RunPassthroughWith(_ io.Writer, _ io.Writer, name string, args ...string) error {
 	m.calls = append(m.calls, mockCall{Name: name, Args: args})
 	key := name
 	if len(args) > 0 {
@@ -424,7 +429,7 @@ func TestRunSandboxedDispatch(t *testing.T) {
 			Config:  domain.Config{AllowNet: nil},
 			WorkDir: "/tmp",
 		}
-		_ = p.RunSandboxed(profile, "echo", []string{"hello"})
+		_ = p.RunSandboxed(profile, "echo", []string{"hello"}, os.Stdout, os.Stderr)
 		if mock.callCount() == 0 {
 			t.Fatal("expected executor to be called")
 		}
@@ -455,7 +460,7 @@ func TestRunSandboxedDispatch(t *testing.T) {
 			Config:  domain.Config{AllowNet: []string{"example.com"}},
 			WorkDir: "/tmp",
 		}
-		_ = p.RunSandboxed(profile, "echo", []string{"hello"})
+		_ = p.RunSandboxed(profile, "echo", []string{"hello"}, os.Stdout, os.Stderr)
 		if mock.callCount() == 0 {
 			t.Fatal("expected executor to be called via runUnshare fallback")
 		}
@@ -833,7 +838,7 @@ func TestRunUnshare_MountMakeRprivate(t *testing.T) {
 		Config:  domain.Config{},
 		WorkDir: "/tmp",
 	}
-	_ = p.RunSandboxed(profile, "echo", []string{"hello"})
+	_ = p.RunSandboxed(profile, "echo", []string{"hello"}, os.Stdout, os.Stderr)
 
 	if mock.callCount() == 0 {
 		t.Fatal("expected executor to be called")

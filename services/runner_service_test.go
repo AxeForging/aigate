@@ -2,6 +2,7 @@ package services
 
 import (
 	"errors"
+	"io"
 	"testing"
 
 	"github.com/AxeForging/aigate/domain"
@@ -25,7 +26,7 @@ func (m *mockPlatform) UserExists(string) (bool, error)               { return f
 func (m *mockPlatform) SetFileACLDeny(string, []string, string) error { return nil }
 func (m *mockPlatform) RemoveFileACL(string, []string, string) error  { return nil }
 func (m *mockPlatform) ListACLs(string) ([]string, error)             { return nil, nil }
-func (m *mockPlatform) RunSandboxed(_ domain.SandboxProfile, cmd string, args []string) error {
+func (m *mockPlatform) RunSandboxed(_ domain.SandboxProfile, cmd string, args []string, _, _ io.Writer) error {
 	m.runSandboxedCalled = true
 	m.runSandboxedCmd = cmd
 	m.runSandboxedArgs = args

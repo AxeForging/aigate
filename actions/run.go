@@ -79,4 +79,14 @@ func printSandboxBanner(cfg *domain.Config) {
 	if len(cfg.AllowNet) > 0 {
 		fmt.Fprintf(os.Stderr, "[aigate] allow_net: %s (all other outbound connections will be blocked)\n", strings.Join(cfg.AllowNet, ", "))
 	}
+	if len(cfg.MaskStdout.Presets) > 0 || len(cfg.MaskStdout.Patterns) > 0 {
+		var parts []string
+		if len(cfg.MaskStdout.Presets) > 0 {
+			parts = append(parts, strings.Join(cfg.MaskStdout.Presets, ", "))
+		}
+		if len(cfg.MaskStdout.Patterns) > 0 {
+			parts = append(parts, fmt.Sprintf("+%d custom pattern(s)", len(cfg.MaskStdout.Patterns)))
+		}
+		fmt.Fprintf(os.Stderr, "[aigate] mask_stdout: %s\n", strings.Join(parts, "; "))
+	}
 }

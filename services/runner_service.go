@@ -2,6 +2,8 @@ package services
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -39,5 +41,28 @@ func (s *RunnerService) Run(profile domain.SandboxProfile, cmd string, args []st
 		}
 	}
 
-	return s.platform.RunSandboxed(profile, cmd, args)
+	stdout, stderr := buildOutputWriters(profile.Config.MaskStdout)
+	if mw, ok := stdout.(*MaskingWriter); ok {
+		defer mw.Flush() //nolint:errcheck
+	}
+	if mw, ok := stderr.(*MaskingWriter); ok {
+		defer mw.Flush() //nolint:errcheck
+	}
+	return s.platform.RunSandboxed(profile, cmd, args, stdout, stderr)
+}
+
+// buildOutputWriters returns (stdout, stderr) writers with masking applied when
+// mask_stdout is configured. Falls back to os.Stdout/os.Stderr on error or when
+// no masking rules are defined.
+func buildOutputWriters(cfg domain.MaskStdout) (io.Writer, io.Writer) {
+	outMasker, err := NewMaskingWriter(os.Stdout, cfg)
+	if err != nil {
+		helpers.Log.Warn().Err(err).Msg("mask_stdout configuration error; output masking disabled")
+		return os.Stdout, os.Stderr
+	}
+	if outMasker == nil {
+		return os.Stdout, os.Stderr
+	}
+	errMasker, _ := NewMaskingWriter(os.Stderr, cfg)
+	return outMasker, errMasker
 }
