@@ -1,29 +1,32 @@
+# Lefthook configuration
+# Install: go install github.com/evilmartians/lefthook@latest
+# Setup: lefthook install
+
 pre-commit:
+  parallel: true
   commands:
     gofmt:
-      run: |
-        gofmt -w .
-        git add .
+      glob: "*.go"
+      run: gofmt -l -w {staged_files}
+      stage_fixed: true
 
-prepare-commit-msg:
+    govet:
+      glob: "*.go"
+      run: go vet ./...
+
+    structlint:
+      run: structlint validate --config .structlint.yaml --silent
+
+commit-msg:
   commands:
     commitlint:
       run: |
-        if [ -z "$1" ]; then
-          COMMIT_MSG_FILE=".git/COMMIT_EDITMSG"
-        else
-          COMMIT_MSG_FILE=$1
-        fi
-        COMMIT_MSG=$(cat $COMMIT_MSG_FILE)
-        echo "$COMMIT_MSG" | grep -E '^((feat|fix|docs|style|refactor|test|chore)(\([a-zA-Z0-9_-]+\))?: .{1,})$' || {
-          echo "⛔️ Commit message does not follow the required pattern!"
+        msg=$(cat {1})
+        if ! echo "$msg" | grep -qE "^(feat|fix|docs|style|refactor|test|chore|build|ci|perf|revert)(\(.+\))?(!)?: .+"; then
+          echo "Error: Commit message must follow conventional commits format"
           echo "Examples:"
-          echo "  feat(auth): add login functionality"
-          echo "  fix(api): resolve 500 error on user fetch"
-          echo "  docs: update README with installation steps"
-          echo "  style(ui): align buttons on the dashboard"
-          echo "  refactor: improve performance of database queries"
-          echo "  test(auth): add tests for login endpoint"
-          echo "  chore(deps): update dependency versions"
+          echo "  feat: add new feature"
+          echo "  fix(sandbox): resolve namespace issue"
+          echo "  docs: update README"
           exit 1
-        }
+        fi

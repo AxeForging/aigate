@@ -1,0 +1,74 @@
+name: PR
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR title follows Conventional Commits
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if echo "$TITLE" | grep -qE "^(feat|fix|docs|style|refactor|test|chore|build|ci|perf|revert)(\(.+\))?(!)?: .+"; then
+            echo "PR title is valid: $TITLE"
+            exit 0
+          fi
+
+          BODY=$(cat <<'COMMENT'
+          ### ⚠️ Invalid PR Title
+
+          PR title must follow the **Conventional Commits** format since we use squash merge:
+
+          ```
+          <type>[optional scope][!]: <description>
+          ```
+
+          **Allowed types:** `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `build`, `ci`, `perf`, `revert`
+
+          **Examples:**
+          - `feat: add new feature`
+          - `fix(sandbox): resolve namespace issue`
+          - `feat!: breaking change`
+          - `chore(deps): update dependencies`
+          COMMENT
+          )
+
+          gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+            -X POST -f body="$BODY"
+
+          echo "::error::PR title must follow Conventional Commits format"
+          exit 1
+
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: AxeForging/reviewforge@main
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AI_PROVIDER: gemini
+          AI_MODEL: gemini-2.5-flash
+          AI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SHOW_TOKEN_USAGE: true
+          INCREMENTAL: false
+          REVIEW_RULES: concise
+
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: AxeForging/structlint@main
+        with:
+          config: .structlint.yaml
+          comment-on-pr: "true"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
