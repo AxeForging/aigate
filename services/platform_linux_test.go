@@ -601,7 +601,7 @@ func TestResolvePatterns_TildeDir(t *testing.T) {
 	t.Setenv("HOME", tmpDir)
 
 	// Create ~/.ssh/ directory
-	os.MkdirAll(tmpDir+"/.ssh", 0o755)
+	_ = os.MkdirAll(tmpDir+"/.ssh", 0o755)
 
 	paths, err := resolvePatterns([]string{"~/.ssh/"}, "/irrelevant")
 	if err != nil {
@@ -807,7 +807,7 @@ func TestBuildMountOverrides_QuotesPaths(t *testing.T) {
 
 func TestBuildMountOverrides_DirMount(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.MkdirAll(tmpDir+"/secrets", 0o755)
+	_ = os.MkdirAll(tmpDir+"/secrets", 0o755)
 
 	profile := domain.SandboxProfile{
 		Config: domain.Config{

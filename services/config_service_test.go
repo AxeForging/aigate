@@ -64,7 +64,7 @@ func TestLoadProject(t *testing.T) {
 		AllowNet: []string{"registry.terraform.io"},
 	}
 	data, _ := yaml.Marshal(&projectCfg)
-	os.WriteFile(filepath.Join(tmpDir, ".aigate.yaml"), data, 0o644)
+	_ = os.WriteFile(filepath.Join(tmpDir, ".aigate.yaml"), data, 0o644)
 
 	svc := NewConfigService()
 	loaded, err := svc.LoadProject(tmpDir)
