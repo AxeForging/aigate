@@ -148,7 +148,7 @@ func TestConfigExists(t *testing.T) {
 	}
 
 	cfg := svc.InitDefaultConfig()
-	svc.SaveGlobal(cfg)
+	_ = svc.SaveGlobal(cfg)
 
 	if !svc.ConfigExists() {
 		t.Error("ConfigExists() should return true after save")

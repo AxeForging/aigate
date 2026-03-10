@@ -155,7 +155,7 @@ func (p *LinuxPlatform) RemoveFileACL(group string, patterns []string, workDir s
 			helpers.Log.Warn().Str("path", path).Str("output", string(out)).Msg("failed to remove ACL")
 		}
 		defaultEntry := fmt.Sprintf("d:g:%s", group)
-		p.exec.Run("setfacl", "-R", "-x", defaultEntry, path)
+		_, _ = p.exec.Run("setfacl", "-R", "-x", defaultEntry, path)
 	}
 	return nil
 }

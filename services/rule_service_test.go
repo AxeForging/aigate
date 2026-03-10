@@ -49,7 +49,7 @@ func TestAddDenyRule_NoDuplicates(t *testing.T) {
 	svc := NewRuleService()
 	cfg := &domain.Config{DenyRead: []string{".env"}}
 
-	svc.AddDenyRule(cfg, domain.RuleTypeRead, []string{".env", "secrets/"})
+	_ = svc.AddDenyRule(cfg, domain.RuleTypeRead, []string{".env", "secrets/"})
 	if len(cfg.DenyRead) != 2 {
 		t.Errorf("DenyRead len = %d, want 2 (no duplicates)", len(cfg.DenyRead))
 	}

@@ -825,9 +825,8 @@ func TestBuildMountOverrides_DirMount(t *testing.T) {
 		t.Error("dir mount should have || true for resilience")
 	}
 	// Should NOT create the file deny marker (no file mounts)
-	if strings.Contains(result, "/tmp/.aigate-denied\n") {
-		// This would be the file marker creation, which shouldn't exist
-		// when there are only directory mounts
+	if strings.Contains(result, "printf '[aigate]") && strings.Contains(result, "/tmp/.aigate-denied\n") {
+		t.Error("file deny marker should not be created when there are only directory mounts")
 	}
 }
 
