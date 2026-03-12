@@ -341,9 +341,107 @@ func TestMaskingWriter_CaseSensitiveByDefault(t *testing.T) {
 	}
 }
 
+func TestMaskingWriter_AWSSecretPreset(t *testing.T) {
+	var buf bytes.Buffer
+	mw, err := NewMaskingWriter(&buf, domain.MaskStdout{Presets: []string{"aws_secret"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Standard .env assignment format
+	input := "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
+	if _, err := mw.Write([]byte(input)); err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+
+	out := buf.String()
+	if strings.Contains(out, "wJalrXUtnFEMI") {
+		t.Errorf("output should not contain raw AWS secret value: %q", out)
+	}
+	if !strings.Contains(out, "AWS_SECRET_ACCESS_KEY=***") {
+		t.Errorf("output should show key name and mask value, got: %q", out)
+	}
+}
+
+func TestMaskingWriter_AWSSecretPreset_ColonFormat(t *testing.T) {
+	var buf bytes.Buffer
+	mw, err := NewMaskingWriter(&buf, domain.MaskStdout{Presets: []string{"aws_secret"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// YAML/config colon format
+	input := "AWS_SECRET_ACCESS_KEY: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
+	if _, err := mw.Write([]byte(input)); err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+
+	out := buf.String()
+	if strings.Contains(out, "wJalrXUtnFEMI") {
+		t.Errorf("output should not contain raw AWS secret value: %q", out)
+	}
+	if !strings.Contains(out, "***") {
+		t.Errorf("output should mask the value, got: %q", out)
+	}
+}
+
+func TestMaskingWriter_AWSSecretPreset_NoFalsePositiveOnKeyID(t *testing.T) {
+	var buf bytes.Buffer
+	// aws_secret preset should NOT mask AWS_ACCESS_KEY_ID (that's aws_key's job)
+	mw, err := NewMaskingWriter(&buf, domain.MaskStdout{Presets: []string{"aws_secret"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	input := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"
+	if _, err := mw.Write([]byte(input)); err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+
+	out := buf.String()
+	if out != input {
+		t.Errorf("aws_secret preset should not mask AWS_ACCESS_KEY_ID line, got: %q", out)
+	}
+}
+
+func TestMaskingWriter_AWSBothPresets(t *testing.T) {
+	var buf bytes.Buffer
+	mw, err := NewMaskingWriter(&buf, domain.MaskStdout{Presets: []string{"aws_key", "aws_secret"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cases := []struct {
+		input       string
+		shouldMask  string
+		description string
+	}{
+		{
+			"AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n",
+			"AKIAIOSFODNN7EXAMPLE",
+			"aws_key should mask access key ID",
+		},
+		{
+			"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
+			"wJalrXUtnFEMI",
+			"aws_secret should mask secret access key",
+		},
+	}
+
+	for _, tc := range cases {
+		buf.Reset()
+		if _, err := mw.Write([]byte(tc.input)); err != nil {
+			t.Fatalf("Write error: %v", err)
+		}
+		if strings.Contains(buf.String(), tc.shouldMask) {
+			t.Errorf("%s: got %q", tc.description, buf.String())
+		}
+	}
+}
+
 func TestBuiltinPresetNames(t *testing.T) {
 	names := BuiltinPresetNames()
-	expected := []string{"openai", "anthropic", "aws_key", "github", "bearer"}
+	expected := []string{"openai", "anthropic", "aws_key", "aws_secret", "github", "bearer"}
 	nameSet := make(map[string]bool, len(names))
 	for _, n := range names {
 		nameSet[n] = true

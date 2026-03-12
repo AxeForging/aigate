@@ -31,6 +31,12 @@ func runWithPTY(out io.Writer, name string, args ...string) error {
 	}
 
 	cmd := exec.Command(name, args...)
+	// pty.Start forks the child and returns the PTY master fd (ptm) to the
+	// parent. The master fd is opened via os.OpenFile("/dev/ptmx", ...) which
+	// Go's stdlib always opens with O_CLOEXEC (see os/file_unix.go). This
+	// guarantees the master fd is closed in the child across every exec()
+	// boundary, so sandboxed processes can never access or impersonate the
+	// parent's terminal.
 	ptm, err := pty.Start(cmd)
 	if err != nil {
 		// PTY unavailable — fall back so masking still applies.
