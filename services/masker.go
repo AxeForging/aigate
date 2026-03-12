@@ -21,6 +21,8 @@ var builtinPresets = map[string]struct {
 	"anthropic": {`sk-ant-[a-zA-Z0-9\-_]{20,}`, 7},
 	// AWS access key ID
 	"aws_key": {`AKIA[0-9A-Z]{16}`, 4},
+	// AWS secret access key (matched by env var name since the value has no fixed prefix)
+	"aws_secret": {`AWS_SECRET_ACCESS_KEY\s*[=:]\s*\S+`, 22},
 	// GitHub PATs: ghp_, gho_, ghu_, ghs_, ghr_
 	"github": {`gh[pousr]_[A-Za-z0-9_]{36,}`, 4},
 	// Generic Bearer token in headers/logs

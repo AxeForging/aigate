@@ -171,6 +171,7 @@ func (s *ConfigService) InitDefaultConfig() *domain.Config {
 				"openai",
 				"anthropic",
 				"aws_key",
+				"aws_secret",
 				"github",
 				"bearer",
 			},

@@ -45,6 +45,14 @@ func (e *RealExecutor) RunPassthrough(name string, args ...string) error {
 }
 
 func (e *RealExecutor) RunPassthroughWith(stdout, stderr io.Writer, name string, args ...string) error {
+	// When stdout is a masking writer (not a raw *os.File), child processes that
+	// inspect their stdout file descriptor would see a pipe instead of a TTY.
+	// Interactive programs like claude detect this and refuse to start or enter
+	// batch/print mode. Using a PTY preserves the TTY illusion while still
+	// allowing the masker to intercept output.
+	if _, isFile := stdout.(*os.File); !isFile {
+		return runWithPTY(stdout, name, args...)
+	}
 	cmd := exec.Command(name, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = stdout
