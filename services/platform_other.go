@@ -3,6 +3,8 @@
 package services
 
 import (
+	"io"
+
 	"github.com/AxeForging/aigate/domain"
 	"github.com/AxeForging/aigate/helpers"
 )
@@ -27,7 +29,7 @@ func (p *unsupportedPlatform) SetFileACLDeny(string, []string, string) error { r
 func (p *unsupportedPlatform) RemoveFileACL(string, []string, string) error  { return errUnsupported }
 func (p *unsupportedPlatform) ListACLs(string) ([]string, error)             { return nil, errUnsupported }
 
-func (p *unsupportedPlatform) RunSandboxed(_ domain.SandboxProfile, _ string, _ []string) error {
+func (p *unsupportedPlatform) RunSandboxed(_ domain.SandboxProfile, _ string, _ []string, _, _ io.Writer) error {
 	return errUnsupported
 }
 

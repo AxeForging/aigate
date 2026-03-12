@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,13 +23,14 @@ type Platform interface {
 	SetFileACLDeny(group string, patterns []string, workDir string) error
 	RemoveFileACL(group string, patterns []string, workDir string) error
 	ListACLs(workDir string) ([]string, error)
-	RunSandboxed(profile domain.SandboxProfile, cmd string, args []string) error
+	RunSandboxed(profile domain.SandboxProfile, cmd string, args []string, stdout, stderr io.Writer) error
 }
 
 // Executor abstracts command execution for testability.
 type Executor interface {
 	Run(name string, args ...string) ([]byte, error)
 	RunPassthrough(name string, args ...string) error
+	RunPassthroughWith(stdout, stderr io.Writer, name string, args ...string) error
 }
 
 // RealExecutor executes real OS commands.
@@ -39,10 +41,22 @@ func (e *RealExecutor) Run(name string, args ...string) ([]byte, error) {
 }
 
 func (e *RealExecutor) RunPassthrough(name string, args ...string) error {
+	return e.RunPassthroughWith(os.Stdout, os.Stderr, name, args...)
+}
+
+func (e *RealExecutor) RunPassthroughWith(stdout, stderr io.Writer, name string, args ...string) error {
+	// When stdout is a masking writer (not a raw *os.File), child processes that
+	// inspect their stdout file descriptor would see a pipe instead of a TTY.
+	// Interactive programs like claude detect this and refuse to start or enter
+	// batch/print mode. Using a PTY preserves the TTY illusion while still
+	// allowing the masker to intercept output.
+	if _, isFile := stdout.(*os.File); !isFile {
+		return runWithPTY(stdout, name, args...)
+	}
 	cmd := exec.Command(name, args...)
 	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	return cmd.Run()
 }
 

@@ -22,6 +22,21 @@ type ResourceLimits struct {
 	MaxPIDs       int    `yaml:"max_pids"`
 }
 
+// MaskPattern defines a single custom output masking rule.
+type MaskPattern struct {
+	Regex           string `yaml:"regex"`
+	ShowPrefix      int    `yaml:"show_prefix"`
+	CaseInsensitive bool   `yaml:"case_insensitive"`
+}
+
+// MaskStdout configures output redaction applied to sandboxed process stdout/stderr.
+// Presets are named built-in patterns for common secret formats.
+// Patterns are additional user-defined regexes.
+type MaskStdout struct {
+	Presets  []string      `yaml:"presets"`
+	Patterns []MaskPattern `yaml:"patterns"`
+}
+
 // Config represents the aigate configuration file.
 type Config struct {
 	Group          string         `yaml:"group"`
@@ -30,6 +45,7 @@ type Config struct {
 	DenyExec       []string       `yaml:"deny_exec"`
 	AllowNet       []string       `yaml:"allow_net"`
 	ResourceLimits ResourceLimits `yaml:"resource_limits"`
+	MaskStdout     MaskStdout     `yaml:"mask_stdout"`
 }
 
 // SandboxProfile is the fully resolved configuration used to launch a sandboxed process.

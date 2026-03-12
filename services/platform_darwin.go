@@ -4,6 +4,7 @@ package services
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -179,7 +180,7 @@ func (p *DarwinPlatform) ListACLs(workDir string) ([]string, error) {
 	return results, nil
 }
 
-func (p *DarwinPlatform) RunSandboxed(profile domain.SandboxProfile, cmd string, args []string) error {
+func (p *DarwinPlatform) RunSandboxed(profile domain.SandboxProfile, cmd string, args []string, stdout, stderr io.Writer) error {
 	// Generate sandbox-exec profile
 	sbProfile := generateSeatbeltProfile(profile)
 
@@ -199,7 +200,7 @@ func (p *DarwinPlatform) RunSandboxed(profile domain.SandboxProfile, cmd string,
 	// Run command under sandbox-exec
 	sandboxArgs := []string{"-f", tmpFile.Name(), cmd}
 	sandboxArgs = append(sandboxArgs, args...)
-	return p.exec.RunPassthrough("sandbox-exec", sandboxArgs...)
+	return p.exec.RunPassthroughWith(stdout, stderr, "sandbox-exec", sandboxArgs...)
 }
 
 func generateSeatbeltProfile(profile domain.SandboxProfile) string {

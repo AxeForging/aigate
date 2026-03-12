@@ -47,6 +47,7 @@ AI coding tools rely on application-level permission systems that can be bypasse
 - **Process isolation** - Mount namespaces overmount sensitive directories (Linux)
 - **Network isolation** - Network namespaces restrict egress to allowed domains (Linux)
 - **Command blocking** - Deny execution of dangerous commands (curl, wget, ssh)
+- **Output masking** - Redact secrets (API keys, tokens) from stdout/stderr before they reach the terminal
 - **Resource limits** - cgroups v2 enforce memory, CPU, PID limits (Linux)
 - **Tool-agnostic** - Works with any AI tool: Claude Code, Cursor, Copilot, Aider
 - **Sensible defaults** - Ships with deny rules for .env, secrets/, .ssh/, *.pem, etc.

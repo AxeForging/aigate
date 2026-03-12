@@ -94,9 +94,9 @@ func TestCLI_DenyReadAndAllow(t *testing.T) {
 
 	// Create a minimal config manually (skip init which needs root)
 	configDir := filepath.Join(tmpHome, ".aigate")
-	os.MkdirAll(configDir, 0o755)
+	_ = os.MkdirAll(configDir, 0o755)
 	configContent := "group: ai-agents\nuser: ai-runner\ndeny_read: []\ndeny_exec: []\nallow_net: []\n"
-	os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644)
+	_ = os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644)
 
 	// Add deny rules
 	cmd := exec.Command(bin, "deny", "read", ".env", "secrets/")
@@ -157,9 +157,9 @@ func TestCLI_DenyExec(t *testing.T) {
 
 	// Create minimal config
 	configDir := filepath.Join(tmpHome, ".aigate")
-	os.MkdirAll(configDir, 0o755)
+	_ = os.MkdirAll(configDir, 0o755)
 	configContent := "group: ai-agents\nuser: ai-runner\ndeny_read: []\ndeny_exec: []\nallow_net: []\n"
-	os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644)
+	_ = os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644)
 
 	cmd := exec.Command(bin, "deny", "exec", "curl", "wget")
 	cmd.Env = env
@@ -179,9 +179,9 @@ func TestCLI_DenyExecSubcommand(t *testing.T) {
 
 	// Create minimal config
 	configDir := filepath.Join(tmpHome, ".aigate")
-	os.MkdirAll(configDir, 0o755)
+	_ = os.MkdirAll(configDir, 0o755)
 	configContent := "group: ai-agents\nuser: ai-runner\ndeny_read: []\ndeny_exec: []\nallow_net: []\n"
-	os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644)
+	_ = os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644)
 
 	// Add subcommand deny rule
 	cmd := exec.Command(bin, "deny", "exec", "kubectl delete", "kubectl create")
@@ -252,9 +252,9 @@ func TestCLI_RunNoArgs(t *testing.T) {
 
 	// Create minimal config
 	configDir := filepath.Join(tmpHome, ".aigate")
-	os.MkdirAll(configDir, 0o755)
+	_ = os.MkdirAll(configDir, 0o755)
 	configContent := "group: ai-agents\nuser: ai-runner\ndeny_read: []\ndeny_exec: []\nallow_net: []\n"
-	os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644)
+	_ = os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644)
 
 	cmd := exec.Command(bin, "run")
 	cmd.Env = env

@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -154,7 +155,10 @@ func (p *LinuxPlatform) RemoveFileACL(group string, patterns []string, workDir s
 			helpers.Log.Warn().Str("path", path).Str("output", string(out)).Msg("failed to remove ACL")
 		}
 		defaultEntry := fmt.Sprintf("d:g:%s", group)
-		p.exec.Run("setfacl", "-R", "-x", defaultEntry, path)
+		out, err = p.exec.Run("setfacl", "-R", "-x", defaultEntry, path)
+		if err != nil {
+			helpers.Log.Warn().Str("path", path).Str("output", string(out)).Msg("failed to remove default ACL")
+		}
 	}
 	return nil
 }
@@ -174,18 +178,18 @@ func (p *LinuxPlatform) ListACLs(workDir string) ([]string, error) {
 	return results, nil
 }
 
-func (p *LinuxPlatform) RunSandboxed(profile domain.SandboxProfile, cmd string, args []string) error {
+func (p *LinuxPlatform) RunSandboxed(profile domain.SandboxProfile, cmd string, args []string, stdout, stderr io.Writer) error {
 	if len(profile.Config.AllowNet) > 0 {
 		if hasSlirp4netns() {
-			return p.runWithNetFilter(profile, cmd, args)
+			return p.runWithNetFilter(profile, cmd, args, stdout, stderr)
 		}
 		helpers.Log.Warn().Msg("slirp4netns not found; network filtering unavailable, running without network restrictions")
 	}
-	return p.runUnshare(profile, cmd, args)
+	return p.runUnshare(profile, cmd, args, stdout, stderr)
 }
 
 // runUnshare runs a command in a user/mount/pid namespace without network filtering.
-func (p *LinuxPlatform) runUnshare(profile domain.SandboxProfile, cmd string, args []string) error {
+func (p *LinuxPlatform) runUnshare(profile domain.SandboxProfile, cmd string, args []string, stdout, stderr io.Writer) error {
 	unshareArgs := []string{
 		"--mount",         // Mount namespace
 		"--pid",           // PID namespace
@@ -207,7 +211,7 @@ func (p *LinuxPlatform) runUnshare(profile domain.SandboxProfile, cmd string, ar
 	sb.WriteString("\n")
 
 	fullArgs := append(unshareArgs, "sh", "-c", sb.String())
-	return p.exec.RunPassthrough("unshare", fullArgs...)
+	return p.exec.RunPassthroughWith(stdout, stderr, "unshare", fullArgs...)
 }
 
 // hasSlirp4netns checks whether slirp4netns is available on the system.
@@ -298,7 +302,7 @@ func parseDNSFromFile(path string) []string {
 // slirp4netns must run INSIDE the user namespace to have CAP_SYS_ADMIN for
 // setns(CLONE_NEWNET). Launching it from the host fails with EPERM because an
 // unprivileged process lacks CAP_SYS_ADMIN in its own (init) user namespace.
-func (p *LinuxPlatform) runWithNetFilter(profile domain.SandboxProfile, cmd string, args []string) error {
+func (p *LinuxPlatform) runWithNetFilter(profile domain.SandboxProfile, cmd string, args []string, stdout, stderr io.Writer) error {
 	dnsServers := getSystemDNS()
 	helpers.Log.Info().
 		Strs("allow_net", profile.Config.AllowNet).
@@ -308,7 +312,7 @@ func (p *LinuxPlatform) runWithNetFilter(profile domain.SandboxProfile, cmd stri
 	innerScript := buildNetFilterScript(profile.Config.AllowNet, dnsServers, profile, cmd, args)
 	outerScript := buildOrchestrationScript(innerScript)
 
-	return p.exec.RunPassthrough("unshare", "--user", "--map-root-user", "--", "sh", "-c", outerScript)
+	return p.exec.RunPassthroughWith(stdout, stderr, "unshare", "--user", "--map-root-user", "--", "sh", "-c", outerScript)
 }
 
 // buildOrchestrationScript wraps the inner sandbox script with the two-process

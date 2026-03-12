@@ -85,6 +85,13 @@ CONFIGURATION
       max_memory: 4G
       max_cpu_percent: 80
       max_pids: 1000
+    mask_stdout:
+      presets:
+        - openai
+        - anthropic
+        - aws_key
+        - github
+        - bearer
 
   Example .aigate.yaml (project-level, adds to global):
     deny_read:
@@ -92,6 +99,46 @@ CONFIGURATION
       - production.env
     allow_net:
       - api.stripe.com
+    mask_stdout:
+      presets:
+        - openai
+        - bearer
+      patterns:
+        - regex: "myapp-secret-[a-z0-9]+"
+          show_prefix: 0
+          case_insensitive: false
+        - regex: "(?:db_pass|database_password)\\s*[=:]\\s*\\S+"
+          show_prefix: 0
+          case_insensitive: true
+
+OUTPUT MASKING (mask_stdout)
+  Redacts secrets from stdout/stderr before they reach the terminal. Applied in
+  addition to kernel-level sandbox protections (defense-in-depth).
+
+  Built-in presets:
+    openai     sk-... / sk-proj-...           → sk-***
+    anthropic  sk-ant-...                     → sk-ant-***
+    aws_key    AKIA... (access key ID)        → AKIA***
+    github     ghp_, gho_, ghu_, ghs_, ghr_  → ghp_***
+    bearer     Bearer <token>                 → Bearer ***
+
+  All 5 presets are enabled by default (aigate init).
+
+  Pattern options:
+    regex            RE2-compatible regular expression (required)
+    show_prefix      bytes to preserve before *** (default: 0, fully masked)
+    case_insensitive match regardless of letter case (default: false)
+
+  Custom pattern examples:
+    mask_stdout:
+      patterns:
+        - regex: "mysecret-[a-z0-9]+"
+          show_prefix: 0                   # → ***
+        - regex: "token-[a-zA-Z0-9]{16}"
+          show_prefix: 6                   # → token-***
+        - regex: "(?:password|secret)\\s*[=:]\\s*\\S+"
+          show_prefix: 0
+          case_insensitive: true           # catches PASSWORD=, Password=, etc.
 
 WHAT THE AI AGENT SEES INSIDE THE SANDBOX
   Startup banner on stderr:
@@ -99,6 +146,7 @@ WHAT THE AI AGENT SEES INSIDE THE SANDBOX
     [aigate] deny_read: .env, secrets/, *.pem
     [aigate] deny_exec: curl, wget, ssh
     [aigate] allow_net: api.anthropic.com (all other outbound connections will be blocked)
+    [aigate] mask_stdout: openai, anthropic, aws_key, github, bearer
 
   Denied files contain a marker instead of their content:
     [aigate] access denied: this file is protected by sandbox policy. See /tmp/.aigate-policy for all active restrictions.

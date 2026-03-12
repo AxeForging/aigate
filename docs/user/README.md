@@ -192,6 +192,64 @@ resource_limits:
   max_pids: 1000
 ```
 
+### Output Masking (mask_stdout)
+
+`mask_stdout` intercepts stdout and stderr from the sandboxed process and redacts secrets before they reach your terminal. This is an **application-layer** protection on top of the kernel-level sandbox — it prevents secrets from appearing in logs, CI output, or terminal recordings.
+
+**Built-in presets:**
+
+| Preset | Matches | Example output |
+|--------|---------|----------------|
+| `openai` | `sk-...` / `sk-proj-...` | `sk-***` |
+| `anthropic` | `sk-ant-...` | `sk-ant-***` |
+| `aws_key` | `AKIA...` (access key ID) | `AKIA***` |
+| `github` | `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_` | `ghp_***` |
+| `bearer` | `Bearer <token>` in headers/logs | `Bearer ***` |
+
+Enable presets in your config:
+
+```yaml
+# ~/.aigate/config.yaml or .aigate.yaml
+mask_stdout:
+  presets:
+    - openai
+    - anthropic
+    - aws_key
+    - github
+    - bearer
+```
+
+**Custom patterns** with options:
+
+```yaml
+mask_stdout:
+  presets:
+    - openai
+  patterns:
+    # Fully mask a custom secret format
+    - regex: "myapp-secret-[a-z0-9]+"
+      show_prefix: 0
+    # Show first 8 chars, mask the rest (e.g. "token-AB***")
+    - regex: "token-[a-zA-Z0-9]{16}"
+      show_prefix: 8
+    # Case-insensitive match (catches PASSWORD=, password=, Password=)
+    - regex: "(?:password|secret|token)\\s*[=:]\\s*\\S+"
+      show_prefix: 0
+      case_insensitive: true
+```
+
+**Pattern options:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `regex` | string | — | RE2-compatible regular expression |
+| `show_prefix` | int | `0` | Bytes to preserve before `***` (0 = fully masked) |
+| `case_insensitive` | bool | `false` | Match regardless of letter case |
+
+`show_prefix: N` preserves the first N bytes so you can identify which secret was present without exposing the value.
+
+> **Note:** Masking is line-buffered. Secrets spanning chunk boundaries on the same line are still caught. Binary output streams should not use `mask_stdout`.
+
 ### Project Config (.aigate.yaml)
 
 Place in your project root to extend global rules:
@@ -204,6 +262,14 @@ allow_net:
   - "registry.terraform.io"
 resource_limits:
   max_memory: "8G"
+mask_stdout:
+  presets:
+    - openai
+    - github
+  patterns:
+    - regex: "stripe_key\\s*[=:]\\s*\\S+"
+      show_prefix: 0
+      case_insensitive: true
 ```
 
 Project config merges with global (extends, does not replace).

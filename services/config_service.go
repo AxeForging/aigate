@@ -111,6 +111,12 @@ func (s *ConfigService) Merge(global, project *domain.Config) *domain.Config {
 	if project.ResourceLimits.MaxPIDs > 0 {
 		merged.ResourceLimits.MaxPIDs = project.ResourceLimits.MaxPIDs
 	}
+	if len(project.MaskStdout.Presets) > 0 {
+		merged.MaskStdout.Presets = appendUnique(merged.MaskStdout.Presets, project.MaskStdout.Presets)
+	}
+	if len(project.MaskStdout.Patterns) > 0 {
+		merged.MaskStdout.Patterns = append(merged.MaskStdout.Patterns, project.MaskStdout.Patterns...)
+	}
 	return &merged
 }
 
@@ -159,6 +165,25 @@ func (s *ConfigService) InitDefaultConfig() *domain.Config {
 			MaxMemory:     "4G",
 			MaxCPUPercent: 80,
 			MaxPIDs:       1000,
+		},
+		MaskStdout: domain.MaskStdout{
+			Presets: []string{
+				"openai",
+				"anthropic",
+				"aws_key",
+				"aws_secret",
+				"github",
+				"bearer",
+			},
+			Patterns: []domain.MaskPattern{
+				{
+					// Catch generic key=value / key: value assignments for common secret names
+					// e.g. "API_KEY=abc123", "secret: mysecret", "password=hunter2"
+					Regex:           `(?:api_?key|secret|password|passwd|token|credential)\s*[=:]\s*\S+`,
+					ShowPrefix:      0,
+					CaseInsensitive: true,
+				},
+			},
 		},
 	}
 }
