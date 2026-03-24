@@ -18,9 +18,14 @@
 curl -L https://github.com/AxeForging/aigate/releases/latest/download/aigate-linux-amd64.tar.gz | tar xz
 sudo mv aigate-linux-amd64 /usr/local/bin/aigate
 
+# Install sandbox dependencies (Linux)
+sudo dnf install bubblewrap slirp4netns   # Fedora / RHEL
+# sudo apt install bubblewrap slirp4netns  # Ubuntu / Debian
+
 # Set up sandbox
 sudo aigate setup              # One-time: create OS group/user for ACLs
 aigate init                    # Create default config
+aigate doctor                  # Verify prerequisites
 
 # Add restrictions
 aigate deny read .env secrets/ *.pem
@@ -44,8 +49,8 @@ AI coding tools rely on application-level permission systems that can be bypasse
 ## Features
 
 - **File isolation** - POSIX ACLs (Linux) / macOS ACLs deny read access to secrets
-- **Process isolation** - Mount namespaces overmount sensitive directories (Linux)
-- **Network isolation** - Network namespaces restrict egress to allowed domains (Linux)
+- **Process isolation** - Bubblewrap (`bwrap`) + mount namespaces isolate the sandbox declaratively (Linux); Seatbelt on macOS
+- **Network isolation** - `bwrap --unshare-net` + `slirp4netns` + `iptables` restrict egress to allowed domains (Linux)
 - **Command blocking** - Deny execution of dangerous commands (curl, wget, ssh)
 - **Output masking** - Redact secrets (API keys, tokens) from stdout/stderr before they reach the terminal
 - **Resource limits** - cgroups v2 enforce memory, CPU, PID limits (Linux)
@@ -67,6 +72,7 @@ AI coding tools rely on application-level permission systems that can be bypasse
 ```sh
 sudo aigate setup                           # Create OS group/user (one-time)
 aigate init                                 # Create default config
+aigate doctor                               # Check prerequisites and isolation mode
 aigate deny read .env secrets/ *.pem        # Block file access
 aigate deny exec curl wget ssh              # Block commands
 aigate deny net --except api.anthropic.com  # Restrict network
