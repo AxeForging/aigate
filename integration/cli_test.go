@@ -49,6 +49,25 @@ func TestCLI_Help(t *testing.T) {
 	if !strings.Contains(output, "status") {
 		t.Error("--help should list 'status' command")
 	}
+	if !strings.Contains(output, "doctor") {
+		t.Error("--help should list 'doctor' command")
+	}
+}
+
+func TestCLI_Doctor(t *testing.T) {
+	bin := buildBinary(t)
+	cmd := exec.Command(bin, "doctor")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("doctor failed: %v\n%s", err, string(out))
+	}
+	output := string(out)
+	if !strings.Contains(output, "doctor") {
+		t.Error("doctor output should contain 'doctor'")
+	}
+	if !strings.Contains(output, "Isolation mode") {
+		t.Error("doctor output should contain 'Isolation mode'")
+	}
 }
 
 func TestCLI_Version(t *testing.T) {

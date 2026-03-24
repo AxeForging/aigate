@@ -422,37 +422,9 @@ func TestBuildNetFilterScript(t *testing.T) {
 }
 
 func TestRunSandboxedDispatch(t *testing.T) {
-	t.Run("empty AllowNet uses runUnshare", func(t *testing.T) {
-		mock := newMockExecutor()
-		p := &LinuxPlatform{exec: mock}
-		profile := domain.SandboxProfile{
-			Config:  domain.Config{AllowNet: nil},
-			WorkDir: "/tmp",
-		}
-		_ = p.RunSandboxed(profile, "echo", []string{"hello"}, os.Stdout, os.Stderr)
-		if mock.callCount() == 0 {
-			t.Fatal("expected executor to be called")
-		}
-		last := mock.lastCall()
-		if last.Name != "unshare" {
-			t.Errorf("expected unshare call, got %q", last.Name)
-		}
-		// Verify no --net flag (runUnshare doesn't add it)
-		for _, arg := range last.Args {
-			if arg == "--net" {
-				t.Error("runUnshare should not pass --net flag")
-			}
-		}
-	})
-
-	t.Run("AllowNet set without slirp4netns warns and falls back to runUnshare", func(t *testing.T) {
-		// This test works because slirp4netns may or may not be installed.
-		// If it IS installed, it will try runWithNetFilter which won't use the mock executor.
-		// We test the warning path by checking that when the mock executor is called,
-		// --net is not passed (meaning runUnshare was used).
-		// In CI without slirp4netns, this tests the fallback path.
+	t.Run("AllowNet set without slirp4netns falls back (no --net)", func(t *testing.T) {
 		if hasSlirp4netns() {
-			t.Skip("slirp4netns is installed; this test covers the fallback path only")
+			t.Skip("slirp4netns is installed; this test covers the no-slirp fallback path only")
 		}
 		mock := newMockExecutor()
 		p := &LinuxPlatform{exec: mock}
@@ -462,15 +434,16 @@ func TestRunSandboxedDispatch(t *testing.T) {
 		}
 		_ = p.RunSandboxed(profile, "echo", []string{"hello"}, os.Stdout, os.Stderr)
 		if mock.callCount() == 0 {
-			t.Fatal("expected executor to be called via runUnshare fallback")
+			t.Fatal("expected executor to be called via fallback")
 		}
+		// Should use bwrap or unshare — never the net-filter path.
 		last := mock.lastCall()
-		if last.Name != "unshare" {
-			t.Errorf("expected unshare call, got %q", last.Name)
+		if last.Name != "bwrap" && last.Name != "unshare" {
+			t.Errorf("expected bwrap or unshare fallback, got %q", last.Name)
 		}
 		for _, arg := range last.Args {
 			if arg == "--net" {
-				t.Error("fallback runUnshare should not pass --net flag")
+				t.Error("no-slirp fallback should not pass --net flag")
 			}
 		}
 	})
@@ -837,7 +810,8 @@ func TestRunUnshare_MountMakeRprivate(t *testing.T) {
 		Config:  domain.Config{},
 		WorkDir: "/tmp",
 	}
-	_ = p.RunSandboxed(profile, "echo", []string{"hello"}, os.Stdout, os.Stderr)
+	// Call runUnshare directly: RunSandboxed prefers bwrap when available.
+	_ = p.runUnshare(profile, "echo", []string{"hello"}, os.Stdout, os.Stderr)
 
 	if mock.callCount() == 0 {
 		t.Fatal("expected executor to be called")
@@ -873,5 +847,49 @@ func TestBuildNetFilterScript_IncludesExecDeny(t *testing.T) {
 	}
 	if !strings.Contains(script, ".aigate") {
 		t.Error("net filter script should include config dir override")
+	}
+}
+
+// ── shellQuote / shellEscape ─────────────────────────────────────────────────
+
+func TestShellQuote_SafeStrings(t *testing.T) {
+	cases := []string{"echo", "--flag", "value", "/usr/bin/sh", "123"}
+	for _, s := range cases {
+		got := shellQuote(s)
+		if got != s {
+			t.Errorf("shellQuote(%q) = %q; safe string should be unchanged", s, got)
+		}
+	}
+}
+
+func TestShellQuote_StringWithSpaces(t *testing.T) {
+	got := shellQuote("hello world")
+	if got != "'hello world'" {
+		t.Errorf("shellQuote(%q) = %q, want %q", "hello world", got, "'hello world'")
+	}
+}
+
+func TestShellQuote_StringWithSingleQuote(t *testing.T) {
+	got := shellQuote("it's fine")
+	// Expected: 'it'\''s fine'
+	want := `'it'\''s fine'`
+	if got != want {
+		t.Errorf("shellQuote(%q) = %q, want %q", "it's fine", got, want)
+	}
+}
+
+func TestShellQuote_DollarSign(t *testing.T) {
+	got := shellQuote("$SECRET")
+	if got != "'$SECRET'" {
+		t.Errorf("shellQuote(%q) = %q, want %q", "$SECRET", got, "'$SECRET'")
+	}
+}
+
+func TestShellEscape_PreservesArgOrder(t *testing.T) {
+	got := shellEscape("echo", []string{"a", "b c", "d"})
+	// "a" and "d" are safe, "b c" gets quoted
+	want := "echo a 'b c' d"
+	if got != want {
+		t.Errorf("shellEscape = %q, want %q", got, want)
 	}
 }

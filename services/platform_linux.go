@@ -181,9 +181,15 @@ func (p *LinuxPlatform) ListACLs(workDir string) ([]string, error) {
 func (p *LinuxPlatform) RunSandboxed(profile domain.SandboxProfile, cmd string, args []string, stdout, stderr io.Writer) error {
 	if len(profile.Config.AllowNet) > 0 {
 		if hasSlirp4netns() {
+			if hasBwrap() {
+				return p.runWithBwrapNetFilter(profile, cmd, args, stdout, stderr)
+			}
 			return p.runWithNetFilter(profile, cmd, args, stdout, stderr)
 		}
 		helpers.Log.Warn().Msg("slirp4netns not found; network filtering unavailable, running without network restrictions")
+	}
+	if hasBwrap() {
+		return p.runWithBwrap(profile, cmd, args, stdout, stderr)
 	}
 	return p.runUnshare(profile, cmd, args, stdout, stderr)
 }
@@ -579,13 +585,23 @@ func buildConfigDirOverride() string {
 	return fmt.Sprintf("mount -t tmpfs -o size=4k tmpfs \"%s\" 2>/dev/null || true\n", configDir)
 }
 
-// shellEscape builds a shell command string from a command and its arguments.
+// shellEscape builds a shell-safe command string from a command and its arguments.
+// Arguments containing shell metacharacters are single-quoted.
 func shellEscape(cmd string, args []string) string {
-	var sb strings.Builder
-	sb.WriteString(cmd)
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, shellQuote(cmd))
 	for _, a := range args {
-		sb.WriteString(" ")
-		sb.WriteString(a)
+		parts = append(parts, shellQuote(a))
 	}
-	return sb.String()
+	return strings.Join(parts, " ")
+}
+
+// shellQuote wraps s in single quotes if it contains shell metacharacters.
+// Embedded single quotes are handled by ending the quoting, inserting a
+// literal single quote, then resuming quoting: foo'bar → 'foo'\”bar'
+func shellQuote(s string) string {
+	if !strings.ContainsAny(s, " \t\n\"'\\$`!&|;()<>{}*?[]~#") {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

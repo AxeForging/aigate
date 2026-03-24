@@ -14,10 +14,28 @@ Unlike application-level restrictions that can be bypassed, aigate uses kernel-e
 
 | | Linux | macOS |
 |---|---|---|
-| **Required** | `setfacl` (usually pre-installed) | None (uses built-in sandbox-exec) |
+| **Recommended** | `bwrap` (Bubblewrap) | None (uses built-in sandbox-exec) |
 | **For network filtering** | `slirp4netns` | None (uses built-in Seatbelt) |
+| **For persistent ACLs** | `setfacl` (usually pre-installed) | None |
 
-Install `slirp4netns` on Linux if you use `allow_net`:
+### Install Bubblewrap (recommended, Linux)
+
+`bwrap` provides stronger isolation than the fallback `unshare` path. When present, aigate uses it for all sandbox modes.
+
+```sh
+# Fedora / RHEL
+sudo dnf install bubblewrap
+
+# Ubuntu / Debian
+sudo apt install bubblewrap
+
+# Arch
+sudo pacman -S bubblewrap
+```
+
+Without `bwrap`, aigate falls back to `unshare`-based namespaces (still functional, but shell-script-based overrides instead of declarative bind mounts).
+
+### Install slirp4netns (required for `allow_net`, Linux)
 
 ```sh
 # Fedora / RHEL
@@ -31,6 +49,14 @@ sudo pacman -S slirp4netns
 ```
 
 If `slirp4netns` is not installed, aigate logs a warning and runs without network filtering.
+
+### Verify your setup
+
+```sh
+aigate doctor
+```
+
+Shows which tools are available and the isolation mode that will be used.
 
 ## Install
 
@@ -142,6 +168,24 @@ Show current sandbox configuration:
 
 ```sh
 aigate status
+```
+
+### doctor
+
+Check sandbox prerequisites and show which isolation mode will be active:
+
+```sh
+aigate doctor
+```
+
+Example output:
+```
+  ok    bwrap            v0.10.0  — sandbox isolation (mount/pid/user namespaces)
+  ok    slirp4netns      v1.3.1   — network filtering (allow_net rules)
+  ok    setfacl          v2.3.2   — persistent ACLs
+  ok    user namespaces  enabled
+
+Isolation mode: bwrap + slirp4netns (full isolation)
 ```
 
 ### reset
@@ -295,7 +339,8 @@ Two layers working together for defense-in-depth:
 
 Restricts outbound connections to domains listed in `allow_net`:
 
-- **Linux**: User namespace + network namespace + `slirp4netns` for user-mode networking + `iptables` OUTPUT rules. Hostnames are resolved inside the namespace so iptables IPs match what the sandboxed process sees. Requires `slirp4netns` (falls back to unrestricted if not installed). No root needed.
+- **Linux (bwrap path)**: bwrap creates a network namespace via `--unshare-net`. Go reads bwrap's `--info-fd` to get the child PID, then launches `slirp4netns --configure` from host-side to attach user-mode networking. Inside the sandbox, `iptables` OUTPUT rules resolve each `allow_net` hostname and restrict egress. No root needed.
+- **Linux (unshare fallback)**: Two-layer `unshare` — outer creates user namespace, inner creates network namespace. `slirp4netns` runs inside the user namespace. Same `iptables` filtering.
 - **macOS**: `sandbox-exec` Seatbelt profiles with `(deny network-outbound)` and per-host `(allow network-outbound (remote ip ...))` rules. Kernel-enforced via Sandbox.kext.
 
 **Linux**:
@@ -308,9 +353,13 @@ Restricts outbound connections to domains listed in `allow_net`:
 
 ### Process isolation (Linux)
 
-- **User namespace**: Maps calling user to UID 0 inside the namespace, giving capabilities for mount/net operations without real root
-- **PID namespace**: Sandboxed process sees itself as PID 1, cannot see or signal host processes. `/proc` is remounted to match
-- **Mount namespace**: Enables filesystem overrides without affecting the host
+When `bwrap` is installed (recommended):
+
+- **User namespace** (`--unshare-user`): Maps calling user to a root-equivalent UID inside the namespace. Required for mount/net operations without real root.
+- **PID namespace** (`--unshare-pid`): Sandboxed process sees itself as PID 1, cannot see or signal host processes. `/proc` is remounted fresh.
+- **Mount namespace**: bwrap declaratively applies deny_read bind mounts, config-dir hiding, and deny_exec stubs before exec — no shell-based overrides.
+
+Without `bwrap`, aigate falls back to `unshare --user --map-root-user` + shell scripts for the same effects.
 
 ![Linux Process Isolation](../diagrams/linux-process.png)
 
@@ -342,7 +391,10 @@ Run `sudo aigate setup` to create the sandbox group and user, then `aigate init`
 Install `slirp4netns` for network filtering on Linux (see [Prerequisites](#prerequisites)). Without it, `allow_net` rules are ignored and the sandboxed process has unrestricted network access.
 
 ### Allowed hosts still blocked
-If hosts in `allow_net` are being rejected, DNS inside the sandbox may not have been ready in time. Check that `slirp4netns` is installed and working. Run with `AIGATE_LOG_LEVEL=debug` for detailed output.
+If hosts in `allow_net` are being rejected, DNS inside the sandbox may not have been ready in time. Check that `slirp4netns` is installed and working. Run `aigate doctor` to verify your setup, or use `AIGATE_LOG_LEVEL=debug` for detailed output.
+
+### bwrap not found
+Install `bubblewrap` for stronger isolation (see [Prerequisites](#prerequisites)). Without it, aigate falls back to the `unshare`-based sandbox which is still functional but uses shell-script-based mount overrides.
 
 ## Exit Codes
 
