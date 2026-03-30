@@ -12,6 +12,14 @@ import (
 	expect "github.com/Netflix/go-expect"
 )
 
+// skipWithoutBwrap skips the test if bwrap is not installed (e.g. in CI).
+func skipWithoutBwrap(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		t.Skip("bwrap not found, skipping sandbox test")
+	}
+}
+
 // sandboxEnv returns a tmpHome with a minimal aigate config and the env slice to use.
 func sandboxEnv(t *testing.T) (tmpHome string, env []string) {
 	t.Helper()
@@ -75,6 +83,7 @@ func TestSandbox_DenyRead(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping sandbox integration test in short mode")
 	}
+	skipWithoutBwrap(t)
 	bin := buildBinary(t)
 	_, env := sandboxEnv(t)
 
@@ -112,6 +121,7 @@ func TestSandbox_DenyExec(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping sandbox integration test in short mode")
 	}
+	skipWithoutBwrap(t)
 	bin := buildBinary(t)
 	_, env := sandboxEnv(t)
 
@@ -150,6 +160,7 @@ func TestSandbox_ConfigDirHidden(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping sandbox integration test in short mode")
 	}
+	skipWithoutBwrap(t)
 	bin := buildBinary(t)
 	tmpHome, env := sandboxEnv(t)
 
@@ -174,6 +185,7 @@ func TestSandbox_PlainCommand(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping sandbox integration test in short mode")
 	}
+	skipWithoutBwrap(t)
 	bin := buildBinary(t)
 	_, env := sandboxEnv(t)
 
@@ -194,6 +206,7 @@ func TestSandbox_ExitCodePropagation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping sandbox integration test in short mode")
 	}
+	skipWithoutBwrap(t)
 	bin := buildBinary(t)
 	_, env := sandboxEnv(t)
 
@@ -229,6 +242,7 @@ func TestSandbox_SandboxBanner(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping sandbox integration test in short mode")
 	}
+	skipWithoutBwrap(t)
 	bin := buildBinary(t)
 	tmpHome, env := sandboxEnv(t)
 
@@ -261,6 +275,7 @@ func TestSandbox_MaskStdout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping sandbox integration test in short mode")
 	}
+	skipWithoutBwrap(t)
 	bin := buildBinary(t)
 	tmpHome, env := sandboxEnv(t)
 
@@ -293,6 +308,7 @@ func TestSandbox_DenyExecSubcommand(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping sandbox integration test in short mode")
 	}
+	skipWithoutBwrap(t)
 	bin := buildBinary(t)
 	tmpHome, env := sandboxEnv(t)
 
@@ -328,6 +344,7 @@ func TestSandbox_ProjectConfig(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping sandbox integration test in short mode")
 	}
+	skipWithoutBwrap(t)
 	bin := buildBinary(t)
 	_, env := sandboxEnv(t)
 
@@ -362,6 +379,7 @@ func TestSandbox_WorkdirAccessible(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping sandbox integration test in short mode")
 	}
+	skipWithoutBwrap(t)
 	bin := buildBinary(t)
 	_, env := sandboxEnv(t)
 
