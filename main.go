@@ -29,6 +29,7 @@ func main() {
 	initAction := actions.NewInitAction(configSvc)
 	setupAction := actions.NewSetupAction(platform, configSvc)
 	helpAIAction := actions.NewHelpAIAction()
+	doctorAction := actions.NewDoctorAction()
 	denyAction := actions.NewDenyAction(ruleSvc, configSvc, platform)
 	allowAction := actions.NewAllowAction(ruleSvc, configSvc, platform)
 	runAction := actions.NewRunAction(runnerSvc, configSvc, platform)
@@ -123,8 +124,13 @@ func main() {
 			Action: resetAction.Execute,
 		},
 		{
-			Name:  "help-ai",
-			Usage: "Show AI-friendly usage examples",
+			Name:   "doctor",
+			Usage:  "Check sandbox prerequisites and show active isolation mode",
+			Action: doctorAction.Execute,
+		},
+		{
+			Name:   "help-ai",
+			Usage:  "Show AI-friendly usage examples",
 			Action: helpAIAction.Execute,
 		},
 		{

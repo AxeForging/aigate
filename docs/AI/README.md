@@ -14,12 +14,13 @@ domain/          Pure data structures
   types.go       Rule, Config, SandboxProfile, ResourceLimits
 
 services/        Core business logic
-  platform.go           Platform interface + Executor interface + resolvePatterns
-  platform_linux.go     Linux: setfacl, groupadd/useradd, unshare (namespaces)
-  platform_darwin.go    macOS: chmod +a, dscl, sandbox-exec
-  config_service.go     Config load/save/merge (global + project)
-  rule_service.go       Rule CRUD (add/remove/list deny rules)
-  runner_service.go     Sandboxed process launcher
+  platform.go                 Platform interface + Executor interface + resolvePatterns
+  platform_linux.go           Linux: setfacl, groupadd/useradd, RunSandboxed dispatch
+  platform_linux_bwrap.go     Linux bwrap path: buildBwrapArgs, runWithBwrap, runWithBwrapNetFilter
+  platform_darwin.go          macOS: chmod +a, dscl, sandbox-exec
+  config_service.go           Config load/save/merge (global + project)
+  rule_service.go             Rule CRUD (add/remove/list deny rules)
+  runner_service.go           Sandboxed process launcher
 
 actions/         CLI command handlers
   init.go        Create group, user, default config
@@ -28,6 +29,7 @@ actions/         CLI command handlers
   run.go         Run command inside sandbox
   status.go      Show current sandbox state
   reset.go       Remove group, user, config
+  doctor.go      Check prerequisites and active isolation mode
 
 helpers/         Logging and error types
   logger.go      zerolog console logger
@@ -40,8 +42,9 @@ integration/     End-to-end CLI tests
 ## Key Design Decisions
 
 - **Platform interface**: Linux and macOS use completely different OS mechanisms. The `Platform` interface abstracts this with `newPlatform()` factory via build tags.
-- **Executor interface**: All `exec.Command` calls go through `Executor`, enabling unit tests without root.
-- **No CGO**: All platform operations use `exec.Command` to call system utilities (setfacl, groupadd, dscl, chmod).
+- **Executor interface**: All `exec.Command` calls go through `Executor`, enabling unit tests without root. Exception: `runWithBwrapNetFilter` uses `exec.Command` directly because it needs `cmd.Start()` + `ExtraFiles` for the info-fd pipe, which the Executor interface does not expose.
+- **bwrap-first on Linux**: `RunSandboxed` prefers bwrap when available; falls back to `unshare`-based shell scripts. bwrap uses declarative bind mounts (no shell injection risk), resolves symlinks for bind destinations, and handles capabilities via `--uid 0 --cap-add` for the network path.
+- **No CGO**: All platform operations use `exec.Command` to call system utilities (setfacl, groupadd, dscl, chmod, bwrap, slirp4netns).
 - **Config merging**: Global config (`~/.aigate/config.yaml`) + project config (`.aigate.yaml`) merge with project extending global.
 
 ## Testing

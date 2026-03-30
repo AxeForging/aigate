@@ -181,9 +181,15 @@ func (p *LinuxPlatform) ListACLs(workDir string) ([]string, error) {
 func (p *LinuxPlatform) RunSandboxed(profile domain.SandboxProfile, cmd string, args []string, stdout, stderr io.Writer) error {
 	if len(profile.Config.AllowNet) > 0 {
 		if hasSlirp4netns() {
+			if hasBwrap() {
+				return p.runWithBwrapNetFilter(profile, cmd, args, stdout, stderr)
+			}
 			return p.runWithNetFilter(profile, cmd, args, stdout, stderr)
 		}
 		helpers.Log.Warn().Msg("slirp4netns not found; network filtering unavailable, running without network restrictions")
+	}
+	if hasBwrap() {
+		return p.runWithBwrap(profile, cmd, args, stdout, stderr)
 	}
 	return p.runUnshare(profile, cmd, args, stdout, stderr)
 }
@@ -267,7 +273,7 @@ func parseDNSFromFile(path string) []string {
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	var servers []string
 	scanner := bufio.NewScanner(f)
@@ -332,7 +338,7 @@ func buildOrchestrationScript(innerScript string) string {
 
 	// Write the inner script to a temp file (avoids all quoting issues).
 	sb.WriteString("_AIGATE_INNER=$(mktemp /tmp/.aigate-inner-XXXXXX)\n")
-	sb.WriteString(fmt.Sprintf("printf '%%s' '%s' | base64 -d > \"$_AIGATE_INNER\"\n", encoded))
+	fmt.Fprintf(&sb, "printf '%%s' '%s' | base64 -d > \"$_AIGATE_INNER\"\n", encoded)
 
 	// Start the sandbox in a new net/mount/pid namespace (background, stdin from fd 3).
 	sb.WriteString("unshare --net --mount --pid --fork -- sh \"$_AIGATE_INNER\" <&3 &\n")
@@ -388,14 +394,14 @@ func buildNetFilterScript(allowNetHosts, dnsServers []string, profile domain.San
 
 	// Allow traffic to upstream DNS servers (needed for slirp4netns forwarding)
 	for _, dns := range dnsServers {
-		sb.WriteString(fmt.Sprintf("iptables -A OUTPUT -d %s -j ACCEPT\n", dns))
+		fmt.Fprintf(&sb, "iptables -A OUTPUT -d %s -j ACCEPT\n", dns)
 	}
 
 	// Wait for DNS to actually work by testing a REAL remote query.
 	// Using localhost previously was wrong — it resolves from /etc/hosts,
 	// not DNS, so it passed before slirp4netns DNS (10.0.2.3) was ready.
 	if len(allowNetHosts) > 0 {
-		sb.WriteString(fmt.Sprintf("for i in $(seq 1 50); do getent ahostsv4 %q >/dev/null 2>&1 && break; sleep 0.1; done\n", allowNetHosts[0]))
+		fmt.Fprintf(&sb, "for i in $(seq 1 50); do getent ahostsv4 %q >/dev/null 2>&1 && break; sleep 0.1; done\n", allowNetHosts[0])
 	}
 
 	// Resolve each AllowNet entry INSIDE the namespace and add iptables rules.
@@ -403,7 +409,7 @@ func buildNetFilterScript(allowNetHosts, dnsServers []string, profile domain.San
 	// avoiding mismatches from CDN anycast / DNS load balancing.
 	// Each host retries up to 3 times to handle transient DNS hiccups.
 	for _, host := range allowNetHosts {
-		sb.WriteString(fmt.Sprintf("for _attempt in 1 2 3; do _ips=$(getent ahostsv4 %q 2>/dev/null | awk '{print $1}' | sort -u); [ -n \"$_ips\" ] && break; sleep 0.5; done; for _ip in $_ips; do iptables -A OUTPUT -d \"$_ip\" -j ACCEPT; done\n", host))
+		fmt.Fprintf(&sb, "for _attempt in 1 2 3; do _ips=$(getent ahostsv4 %q 2>/dev/null | awk '{print $1}' | sort -u); [ -n \"$_ips\" ] && break; sleep 0.5; done; for _ip in $_ips; do iptables -A OUTPUT -d \"$_ip\" -j ACCEPT; done\n", host)
 	}
 
 	sb.WriteString("iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited\n")
@@ -430,15 +436,15 @@ func buildPolicyFile(profile domain.SandboxProfile) string {
 	sb.WriteString("{\n")
 	sb.WriteString("printf '[aigate] sandbox policy\\n\\n'\n")
 	if len(profile.Config.DenyRead) > 0 {
-		sb.WriteString(fmt.Sprintf("printf 'deny_read: %s\\n'\n", strings.Join(profile.Config.DenyRead, ", ")))
+		fmt.Fprintf(&sb, "printf 'deny_read: %s\\n'\n", strings.Join(profile.Config.DenyRead, ", "))
 		sb.WriteString("printf 'These files/directories appear empty or contain a deny marker inside the sandbox.\\n\\n'\n")
 	}
 	if len(profile.Config.DenyExec) > 0 {
-		sb.WriteString(fmt.Sprintf("printf 'deny_exec: %s\\n'\n", strings.Join(profile.Config.DenyExec, ", ")))
+		fmt.Fprintf(&sb, "printf 'deny_exec: %s\\n'\n", strings.Join(profile.Config.DenyExec, ", "))
 		sb.WriteString("printf 'These commands are blocked both before and inside the sandbox.\\n\\n'\n")
 	}
 	if len(profile.Config.AllowNet) > 0 {
-		sb.WriteString(fmt.Sprintf("printf 'allow_net: %s\\n'\n", strings.Join(profile.Config.AllowNet, ", ")))
+		fmt.Fprintf(&sb, "printf 'allow_net: %s\\n'\n", strings.Join(profile.Config.AllowNet, ", "))
 		sb.WriteString("printf 'Only these hosts are reachable. All other outbound connections are rejected.\\n\\n'\n")
 	}
 	sb.WriteString("} > /tmp/.aigate-policy\n")
@@ -487,17 +493,17 @@ func buildMountOverrides(profile domain.SandboxProfile) string {
 		}
 	}
 	if hasFile {
-		sb.WriteString(fmt.Sprintf("printf '%s\\n' > /tmp/.aigate-denied\n", denyMsg))
+		fmt.Fprintf(&sb, "printf '%s\\n' > /tmp/.aigate-denied\n", denyMsg)
 	}
 
 	// Each mount is independent — failures don't cascade.
 	for _, e := range entries {
 		if e.isDir {
-			sb.WriteString(fmt.Sprintf(
+			fmt.Fprintf(&sb,
 				"{ mount -t tmpfs -o size=4k tmpfs \"%s\" && printf '%s\\n' > \"%s/.aigate-denied\" && mount -o remount,ro \"%s\"; } 2>/dev/null || true\n",
-				e.path, dirMsg, e.path, e.path))
+				e.path, dirMsg, e.path, e.path)
 		} else {
-			sb.WriteString(fmt.Sprintf("mount --bind /tmp/.aigate-denied \"%s\" 2>/dev/null || true\n", e.path))
+			fmt.Fprintf(&sb, "mount --bind /tmp/.aigate-denied \"%s\" 2>/dev/null || true\n", e.path)
 		}
 	}
 
@@ -539,9 +545,9 @@ func buildExecDenyOverrides(profile domain.SandboxProfile) string {
 		// For each denied command, find all instances in PATH and overlay them.
 		// Each command is independent — a failure doesn't affect others.
 		for _, cmd := range fullBlocks {
-			sb.WriteString(fmt.Sprintf(
+			fmt.Fprintf(&sb,
 				"for _d in $(echo \"$PATH\" | tr ':' ' '); do [ -x \"$_d/%s\" ] && mount --bind /tmp/.aigate-deny-exec \"$_d/%s\" 2>/dev/null; done\n",
-				cmd, cmd))
+				cmd, cmd)
 		}
 	}
 
@@ -551,7 +557,7 @@ func buildExecDenyOverrides(profile domain.SandboxProfile) string {
 		// Build case statement arms for denied subcommands
 		var caseArms strings.Builder
 		for _, sub := range subs {
-			caseArms.WriteString(fmt.Sprintf("%s) echo \"[aigate] blocked: '%s %s' is denied by sandbox policy\" >&2; exit 126;; ", sub, baseCmd, sub))
+			fmt.Fprintf(&caseArms, "%s) echo \"[aigate] blocked: '%s %s' is denied by sandbox policy\" >&2; exit 126;; ", sub, baseCmd, sub)
 		}
 
 		wrapper := fmt.Sprintf("#!/bin/sh\nfor _a in \"$@\"; do case \"$_a\" in %s*) break;; esac; done\nexec /tmp/.aigate-orig-%s \"$@\"\n",
@@ -560,9 +566,9 @@ func buildExecDenyOverrides(profile domain.SandboxProfile) string {
 		encoded := base64.StdEncoding.EncodeToString([]byte(wrapper))
 
 		// Find the original binary, copy it aside, then mount wrapper over it
-		sb.WriteString(fmt.Sprintf(
+		fmt.Fprintf(&sb,
 			"_orig=$(command -v %s 2>/dev/null) && if [ -n \"$_orig\" ]; then cp \"$_orig\" /tmp/.aigate-orig-%s && printf '%%s' '%s' | base64 -d > /tmp/.aigate-wrap-%s && chmod +x /tmp/.aigate-wrap-%s && mount --bind /tmp/.aigate-wrap-%s \"$_orig\" 2>/dev/null; fi\n",
-			baseCmd, baseCmd, encoded, baseCmd, baseCmd, baseCmd))
+			baseCmd, baseCmd, encoded, baseCmd, baseCmd, baseCmd)
 	}
 
 	return sb.String()
@@ -579,13 +585,23 @@ func buildConfigDirOverride() string {
 	return fmt.Sprintf("mount -t tmpfs -o size=4k tmpfs \"%s\" 2>/dev/null || true\n", configDir)
 }
 
-// shellEscape builds a shell command string from a command and its arguments.
+// shellEscape builds a shell-safe command string from a command and its arguments.
+// Arguments containing shell metacharacters are single-quoted.
 func shellEscape(cmd string, args []string) string {
-	var sb strings.Builder
-	sb.WriteString(cmd)
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, shellQuote(cmd))
 	for _, a := range args {
-		sb.WriteString(" ")
-		sb.WriteString(a)
+		parts = append(parts, shellQuote(a))
 	}
-	return sb.String()
+	return strings.Join(parts, " ")
+}
+
+// shellQuote wraps s in single quotes if it contains shell metacharacters.
+// Embedded single quotes are handled by ending the quoting, inserting a
+// literal single quote, then resuming quoting: foo'bar → 'foo'\”bar'
+func shellQuote(s string) string {
+	if !strings.ContainsAny(s, " \t\n\"'\\$`!&|;()<>{}*?[]~#") {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
