@@ -174,14 +174,56 @@ func TestBuildBwrapArgs_ReadOnlyRoot(t *testing.T) {
 	}
 }
 
-func TestBuildBwrapArgs_WorkdirWritable(t *testing.T) {
-	workDir := t.TempDir()
+func TestBuildBwrapArgs_HomeWritable(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	profile := domain.SandboxProfile{Config: domain.Config{}, WorkDir: tmpHome + "/project"}
+	args, tmp := setupBwrapArgsTest(t, profile)
+	defer cleanupTmp(tmp)
+
+	if !containsTriple(args, "--bind", tmpHome, tmpHome) {
+		t.Errorf("args should contain --bind %q %q for writable home, got: %v", tmpHome, tmpHome, args)
+	}
+}
+
+func TestBuildBwrapArgs_SensitiveDotfilesReadOnly(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Create sensitive dotfiles
+	for _, name := range []string{".ssh", ".gnupg"} {
+		if err := os.MkdirAll(tmpHome+"/"+name, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{".bashrc", ".gitconfig"} {
+		writeTestFile(t, tmpHome+"/"+name, "content")
+	}
+
+	profile := domain.SandboxProfile{Config: domain.Config{}, WorkDir: tmpHome + "/project"}
+	args, tmp := setupBwrapArgsTest(t, profile)
+	defer cleanupTmp(tmp)
+
+	for _, name := range []string{".ssh", ".gnupg", ".bashrc", ".gitconfig"} {
+		path := tmpHome + "/" + name
+		if !containsTriple(args, "--ro-bind", path, path) {
+			t.Errorf("args should contain --ro-bind %q %q for sensitive dotfile", path, path)
+		}
+	}
+}
+
+func TestBuildBwrapArgs_WorkdirOutsideHome(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	workDir := t.TempDir() // separate from home
 	profile := domain.SandboxProfile{Config: domain.Config{}, WorkDir: workDir}
 	args, tmp := setupBwrapArgsTest(t, profile)
 	defer cleanupTmp(tmp)
 
 	if !containsTriple(args, "--bind", workDir, workDir) {
-		t.Errorf("args should contain --bind %q %q for writable workdir, got: %v", workDir, workDir, args)
+		t.Errorf("args should contain --bind %q %q for workdir outside home, got: %v", workDir, workDir, args)
 	}
 }
 

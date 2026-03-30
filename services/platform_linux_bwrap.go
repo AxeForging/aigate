@@ -62,7 +62,7 @@ func (p *LinuxPlatform) runWithBwrap(profile domain.SandboxProfile, cmd string, 
 // caller is responsible for removing them after bwrap exits.
 func (p *LinuxPlatform) buildBwrapArgs(profile domain.SandboxProfile, tmpFiles *[]string) ([]string, error) {
 	args := []string{
-		"--ro-bind", "/", "/", // read-only root (prevents writes outside workdir)
+		"--ro-bind", "/", "/", // read-only root (system dirs protected)
 		"--dev", "/dev", // minimal private /dev
 		"--proc", "/proc", // fresh /proc for PID namespace
 		"--tmpfs", "/tmp", // isolated writable /tmp (no host /tmp leaks)
@@ -71,13 +71,40 @@ func (p *LinuxPlatform) buildBwrapArgs(profile domain.SandboxProfile, tmpFiles *
 		"--die-with-parent",
 	}
 
-	// Writable workdir: the only host directory the sandbox can modify.
-	if profile.WorkDir != "" {
-		args = append(args, "--bind", profile.WorkDir, profile.WorkDir)
+	// Writable home: tools (claude, git, npm, etc.) need to write to their
+	// own config/cache dirs. We then protect sensitive paths with ro-bind
+	// overlays below.
+	home, homeErr := os.UserHomeDir()
+	if homeErr == nil {
+		args = append(args, "--bind", home, home)
 	}
 
-	// Hide aigate config directory from the sandboxed process.
-	if home, err := os.UserHomeDir(); err == nil {
+	// Writable workdir: if the workdir is outside $HOME (e.g. /opt/project),
+	// add an explicit writable bind mount. Skip if already covered by $HOME.
+	if profile.WorkDir != "" {
+		if homeErr != nil || !strings.HasPrefix(profile.WorkDir, home+"/") && profile.WorkDir != home {
+			args = append(args, "--bind", profile.WorkDir, profile.WorkDir)
+		}
+	}
+
+	// Protect sensitive dotfiles from tampering by AI agents.
+	// These are overlaid read-only on top of the writable $HOME bind.
+	if homeErr == nil {
+		for _, sensitive := range []string{
+			".ssh",
+			".gnupg",
+			".bashrc",
+			".bash_profile",
+			".profile",
+			".zshrc",
+			".gitconfig",
+		} {
+			path := filepath.Join(home, sensitive)
+			if _, err := os.Stat(path); err == nil {
+				args = append(args, "--ro-bind", path, path)
+			}
+		}
+		// Hide aigate config directory completely.
 		args = append(args, "--tmpfs", filepath.Join(home, ".aigate"))
 	}
 
