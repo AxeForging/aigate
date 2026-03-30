@@ -90,10 +90,14 @@ func TestEscape_KillHostProcess(t *testing.T) {
 	}()
 	hostPID := strconv.Itoa(victim.Process.Pid)
 
-	// Try to kill it from inside the sandbox
-	runSandboxedCmd(t, bin, env, "", "sh", "-c", "kill -9 "+hostPID+" 2>/dev/null; true") //nolint:errcheck
+	// Try to kill it from inside the sandbox — verify the command fails
+	out, _ := runSandboxedCmd(t, bin, env, "", "sh", "-c",
+		"kill -9 "+hostPID+" 2>&1; echo KILL_EXIT:$?")
+	if strings.Contains(out, "KILL_EXIT:0") {
+		t.Error("kill command succeeded inside sandbox — PID namespace isolation broken")
+	}
 
-	// Verify victim is still alive
+	// Double-check: verify victim is still alive on the host
 	if err := victim.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Error("host process was killed from inside sandbox — PID namespace broken")
 	}
@@ -107,10 +111,14 @@ func TestEscape_ProcCmdlinePID1(t *testing.T) {
 	bin := buildBinary(t)
 	_, env := sandboxEnv(t)
 
-	out, _ := runSandboxedCmd(t, bin, env, "", "sh", "-c",
+	out, err := runSandboxedCmd(t, bin, env, "", "sh", "-c",
 		"cat /proc/1/cmdline 2>&1 | tr '\\0' ' '")
+	trimmed := strings.TrimSpace(out)
+	if err != nil || trimmed == "" {
+		t.Fatalf("cannot read PID 1 cmdline inside sandbox: err=%v out=%q", err, out)
+	}
 	if strings.Contains(out, "systemd") || strings.Contains(out, "/sbin/init") {
-		t.Errorf("PID 1 is host init (%q) — PID namespace not working", strings.TrimSpace(out))
+		t.Errorf("PID 1 is host init (%q) — PID namespace not working", trimmed)
 	}
 }
 
@@ -388,68 +396,19 @@ except Exception as e:
 	}
 }
 
-// TestEscape_DenyExecViaCopy verifies that copying a denied binary to a new
-// path and running it is still blocked (or at least the original deny works).
-func TestEscape_DenyExecViaCopy(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	tmpHome, env := sandboxEnv(t)
-
-	workDir := t.TempDir()
-	blockedBin := filepath.Join(workDir, "blocked-tool")
-	script := "#!/bin/sh\necho BLOCKED_TOOL_EXECUTED\n"
-	if err := os.WriteFile(blockedBin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	cfgPath := filepath.Join(tmpHome, ".aigate", "config.yaml")
-	cfg := "group: ai-agents\nuser: ai-runner\ndeny_read: []\ndeny_exec: [blocked-tool]\nallow_net: []\n"
-	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Copy the binary to a new name and try to run it
-	out, _ := runSandboxedCmd(t, bin, env, workDir, "sh", "-c",
-		"cp "+blockedBin+" /tmp/renamed-tool 2>/dev/null && chmod +x /tmp/renamed-tool && /tmp/renamed-tool 2>&1; echo EXIT:$?")
-	if strings.Contains(out, "BLOCKED_TOOL_EXECUTED") {
-		// Note: this IS expected to work — deny_exec blocks the specific binary path,
-		// not the content. Copying to a new name creates a different path.
-		// This is a known limitation we should document, not a bug.
-		t.Log("KNOWN LIMITATION: deny_exec bypassed by copying binary to a new path")
-	}
+// TestKnownLimitation_DenyExecViaCopy documents that copying a denied binary
+// to a new path bypasses deny_exec. This is inherent to path-based blocking.
+// Pair deny_exec with deny_read to mitigate: if the file can't be read,
+// it can't be copied.
+func TestKnownLimitation_DenyExecViaCopy(t *testing.T) {
+	t.Skip("known limitation: deny_exec is path-based, copying binary to new path bypasses it")
 }
 
-// TestEscape_DenyExecViaInterpreter verifies that a denied script can't be
-// bypassed by passing it to an interpreter directly (sh ./blocked-tool).
-func TestEscape_DenyExecViaInterpreter(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	tmpHome, env := sandboxEnv(t)
-
-	workDir := t.TempDir()
-	blockedBin := filepath.Join(workDir, "blocked-tool")
-	script := "#!/bin/sh\necho BLOCKED_TOOL_EXECUTED\n"
-	if err := os.WriteFile(blockedBin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	cfgPath := filepath.Join(tmpHome, ".aigate", "config.yaml")
-	cfg := "group: ai-agents\nuser: ai-runner\ndeny_read: []\ndeny_exec: [blocked-tool]\nallow_net: []\n"
-	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Try to run via sh interpreter
-	out, _ := runSandboxedCmd(t, bin, env, workDir, "sh", blockedBin)
-	if strings.Contains(out, "BLOCKED_TOOL_EXECUTED") {
-		// This is also a known limitation — deny_exec overlays the binary,
-		// but you can still read and interpret it if deny_read doesn't cover it.
-		t.Log("KNOWN LIMITATION: deny_exec bypassed by passing script to interpreter (sh ./blocked-tool)")
-	}
+// TestKnownLimitation_DenyExecViaInterpreter documents that `sh ./blocked-tool`
+// reads and interprets the script, bypassing the exec overlay. Pair deny_exec
+// with deny_read to mitigate.
+func TestKnownLimitation_DenyExecViaInterpreter(t *testing.T) {
+	t.Skip("known limitation: sh ./script reads the file (deny_read not set), bypassing exec overlay")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -466,14 +425,11 @@ func TestEscape_DevMemBlocked(t *testing.T) {
 	_, env := sandboxEnv(t)
 
 	for _, dev := range []string{"/dev/mem", "/dev/kmem", "/dev/port"} {
-		out, _ := runSandboxedCmd(t, bin, env, "", "test", "-e", dev)
-		// test -e returns 0 if exists, 1 if not
-		out2, _ := runSandboxedCmd(t, bin, env, "", "sh", "-c",
+		out, _ := runSandboxedCmd(t, bin, env, "", "sh", "-c",
 			"test -e "+dev+" && echo EXISTS || echo MISSING")
-		if strings.Contains(out2, "EXISTS") {
+		if strings.Contains(out, "EXISTS") {
 			t.Errorf("%s exists inside sandbox — should not be present with --dev /dev", dev)
 		}
-		_ = out // suppress unused
 	}
 }
 
@@ -699,16 +655,15 @@ func TestEscape_WorkdirWriteAllowed(t *testing.T) {
 	workDir := t.TempDir()
 
 	outFile := filepath.Join(workDir, "test-output.txt")
-	out, err := runSandboxedCmd(t, bin, env, workDir, "sh", "-c",
+	out, _ := runSandboxedCmd(t, bin, env, workDir, "sh", "-c",
 		"echo WRITTEN > "+outFile+"; echo WRITE_EXIT:$?")
-	if err != nil && !strings.Contains(out, "WRITE_EXIT:") {
-		t.Fatalf("write command failed: %v\n%s", err, out)
+	if !strings.Contains(out, "WRITE_EXIT:0") {
+		t.Fatalf("write command failed inside sandbox: %s", out)
 	}
 
 	data, err := os.ReadFile(outFile)
 	if err != nil {
-		t.Errorf("workdir should be writable but file wasn't created: %v", err)
-		return
+		t.Fatalf("workdir should be writable but file wasn't created: %v", err)
 	}
 	if !strings.Contains(string(data), "WRITTEN") {
 		t.Errorf("workdir file content wrong: %q", string(data))
@@ -741,27 +696,9 @@ func TestEscape_TmpIsolated(t *testing.T) {
 
 // TestEscape_DenyExecViaCopyToWorkdir verifies that copying a PATH-based denied
 // binary into the writable workdir and running the copy is blocked.
-func TestEscape_DenyExecViaCopyToWorkdir(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	tmpHome, env := sandboxEnv(t)
-	workDir := t.TempDir()
-
-	cfgPath := filepath.Join(tmpHome, ".aigate", "config.yaml")
-	cfg := "group: ai-agents\nuser: ai-runner\ndeny_read: []\ndeny_exec: [curl]\nallow_net: []\n"
-	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Try: copy curl to workdir, run the copy
-	out, _ := runSandboxedCmd(t, bin, env, workDir, "sh", "-c",
-		"cp /usr/bin/curl "+workDir+"/my-curl 2>/dev/null && chmod +x "+workDir+"/my-curl && "+workDir+"/my-curl --version 2>&1; echo COPY_EXIT:$?")
-	if strings.Contains(out, "curl") && strings.Contains(out, "COPY_EXIT:0") {
-		// This is a known limitation: copying a binary to a new path bypasses
-		// path-based deny_exec. The copy succeeds because workdir is writable
-		// and the new path has no deny overlay.
-		t.Log("KNOWN LIMITATION: copied curl to workdir and ran it (path-based deny_exec bypass)")
-	}
+// TestKnownLimitation_DenyExecViaCopyToWorkdir documents that copying a
+// denied binary from a ro-bind path to the writable workdir bypasses
+// deny_exec. Same root cause as DenyExecViaCopy.
+func TestKnownLimitation_DenyExecViaCopyToWorkdir(t *testing.T) {
+	t.Skip("known limitation: cp /usr/bin/curl workdir/my-curl bypasses path-based deny_exec")
 }
