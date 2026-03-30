@@ -21,6 +21,11 @@ pre-commit:
     structlint:
       run: structlint validate --config .structlint.yaml --silent
 
+pre-push:
+  commands:
+    govulncheck:
+      run: govulncheck ./...
+
 commit-msg:
   commands:
     commitlint:

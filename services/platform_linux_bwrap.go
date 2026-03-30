@@ -127,15 +127,15 @@ func policyFileContent(profile domain.SandboxProfile) string {
 	var sb strings.Builder
 	sb.WriteString("[aigate] sandbox policy\n\n")
 	if len(profile.Config.DenyRead) > 0 {
-		sb.WriteString(fmt.Sprintf("deny_read: %s\n", strings.Join(profile.Config.DenyRead, ", ")))
+		fmt.Fprintf(&sb, "deny_read: %s\n", strings.Join(profile.Config.DenyRead, ", "))
 		sb.WriteString("These files/directories appear empty or contain a deny marker inside the sandbox.\n\n")
 	}
 	if len(profile.Config.DenyExec) > 0 {
-		sb.WriteString(fmt.Sprintf("deny_exec: %s\n", strings.Join(profile.Config.DenyExec, ", ")))
+		fmt.Fprintf(&sb, "deny_exec: %s\n", strings.Join(profile.Config.DenyExec, ", "))
 		sb.WriteString("These commands are blocked both before and inside the sandbox.\n\n")
 	}
 	if len(profile.Config.AllowNet) > 0 {
-		sb.WriteString(fmt.Sprintf("allow_net: %s\n", strings.Join(profile.Config.AllowNet, ", ")))
+		fmt.Fprintf(&sb, "allow_net: %s\n", strings.Join(profile.Config.AllowNet, ", "))
 		sb.WriteString("Only these hosts are reachable. All other outbound connections are rejected.\n\n")
 	}
 	return sb.String()
@@ -147,7 +147,7 @@ func writeTmpFile(pattern, content string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 	if _, err := f.WriteString(content); err != nil {
 		os.Remove(f.Name()) //nolint:errcheck
 		return "", err
@@ -196,7 +196,7 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 	if err != nil {
 		return fmt.Errorf("create info pipe: %w", err)
 	}
-	defer infoR.Close()
+	defer infoR.Close() //nolint:errcheck
 
 	bwrapArgs = appendBwrapNetArgs(bwrapArgs, profile.Config.AllowNet, dnsServers, cmd, args)
 
@@ -220,20 +220,20 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 	} else {
 		err = startBwrapPlain(bwrapCmd, stdout, stderr, infoW)
 	}
-	infoW.Close() // close write end in parent after Start (child has its own copy)
+	infoW.Close() //nolint:errcheck // close write end in parent after Start (child has its own copy)
 	if err != nil {
-		infoR.Close()
+		infoR.Close() //nolint:errcheck
 		return fmt.Errorf("start bwrap: %w", err)
 	}
 
 	// Read the child PID from info-fd (bwrap writes before exec'ing inner script).
 	childPID, err := readBwrapInfoPID(infoR)
-	infoR.Close()
+	infoR.Close() //nolint:errcheck
 	if err != nil {
 		bwrapCmd.Process.Kill() //nolint:errcheck
 		bwrapCmd.Wait()         //nolint:errcheck
 		if ptm != nil {
-			ptm.Close()
+			ptm.Close() //nolint:errcheck
 		}
 		return fmt.Errorf("bwrap info-fd: %w", err)
 	}
@@ -247,7 +247,7 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 		bwrapCmd.Process.Kill() //nolint:errcheck
 		bwrapCmd.Wait()         //nolint:errcheck
 		if ptm != nil {
-			ptm.Close()
+			ptm.Close() //nolint:errcheck
 		}
 		return fmt.Errorf("start slirp4netns: %w", slirpErr)
 	}
@@ -280,7 +280,7 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 	// Wait for bwrap to finish, then clean up slirp4netns.
 	bwrapErr := bwrapCmd.Wait()
 	if ptm != nil {
-		ptm.Close()
+		ptm.Close() //nolint:errcheck
 	}
 	slirpCmd.Process.Kill() //nolint:errcheck
 	slirpCmd.Wait()         //nolint:errcheck
@@ -373,13 +373,13 @@ func buildNetOnlyScript(allowNetHosts, dnsServers []string, cmd string, args []s
 	sb.WriteString("iptables -A OUTPUT -p udp --dport 53 -j ACCEPT\n")
 	sb.WriteString("iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT\n")
 	for _, dns := range dnsServers {
-		sb.WriteString(fmt.Sprintf("iptables -A OUTPUT -d %s -j ACCEPT\n", dns))
+		fmt.Fprintf(&sb, "iptables -A OUTPUT -d %s -j ACCEPT\n", dns)
 	}
 	if len(allowNetHosts) > 0 {
-		sb.WriteString(fmt.Sprintf("for i in $(seq 1 50); do getent ahostsv4 %q >/dev/null 2>&1 && break; sleep 0.1; done\n", allowNetHosts[0]))
+		fmt.Fprintf(&sb, "for i in $(seq 1 50); do getent ahostsv4 %q >/dev/null 2>&1 && break; sleep 0.1; done\n", allowNetHosts[0])
 	}
 	for _, host := range allowNetHosts {
-		sb.WriteString(fmt.Sprintf("for _attempt in 1 2 3; do _ips=$(getent ahostsv4 %q 2>/dev/null | awk '{print $1}' | sort -u); [ -n \"$_ips\" ] && break; sleep 0.5; done; for _ip in $_ips; do iptables -A OUTPUT -d \"$_ip\" -j ACCEPT; done\n", host))
+		fmt.Fprintf(&sb, "for _attempt in 1 2 3; do _ips=$(getent ahostsv4 %q 2>/dev/null | awk '{print $1}' | sort -u); [ -n \"$_ips\" ] && break; sleep 0.5; done; for _ip in $_ips; do iptables -A OUTPUT -d \"$_ip\" -j ACCEPT; done\n", host)
 	}
 	sb.WriteString("iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited\n")
 
@@ -468,7 +468,7 @@ func buildBwrapExecDenyArgs(profile domain.SandboxProfile) (bwrapArgs []string, 
 
 		var caseArms strings.Builder
 		for _, sub := range subs {
-			caseArms.WriteString(fmt.Sprintf("%s) echo \"[aigate] blocked: '%s %s' is denied by sandbox policy\" >&2; exit 126;; ", sub, baseCmd, sub))
+			fmt.Fprintf(&caseArms, "%s) echo \"[aigate] blocked: '%s %s' is denied by sandbox policy\" >&2; exit 126;; ", sub, baseCmd, sub)
 		}
 		wrapper := fmt.Sprintf("#!/bin/sh\nfor _a in \"$@\"; do case \"$_a\" in %s*) break;; esac; done\nexec %s \"$@\"\n",
 			caseArms.String(), origInSandbox)

@@ -112,7 +112,7 @@ func TestWriteTmpFile_CreatesFileWithContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writeTmpFile() error = %v", err)
 	}
-	defer os.Remove(path)
+	defer os.Remove(path) //nolint:errcheck
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -128,13 +128,13 @@ func TestWriteTmpFile_ReturnsUniqueFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first writeTmpFile() error = %v", err)
 	}
-	defer os.Remove(p1)
+	defer os.Remove(p1) //nolint:errcheck
 
 	p2, err := writeTmpFile("aigate-test-*", "b")
 	if err != nil {
 		t.Fatalf("second writeTmpFile() error = %v", err)
 	}
-	defer os.Remove(p2)
+	defer os.Remove(p2) //nolint:errcheck
 
 	if p1 == p2 {
 		t.Error("writeTmpFile() should return unique paths")
@@ -156,7 +156,7 @@ func setupBwrapArgsTest(t *testing.T, profile domain.SandboxProfile) ([]string, 
 
 func cleanupTmp(tmp []string) {
 	for _, f := range tmp {
-		os.Remove(f)
+		os.Remove(f) //nolint:errcheck
 	}
 }
 
