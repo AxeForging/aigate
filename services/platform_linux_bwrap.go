@@ -62,12 +62,18 @@ func (p *LinuxPlatform) runWithBwrap(profile domain.SandboxProfile, cmd string, 
 // caller is responsible for removing them after bwrap exits.
 func (p *LinuxPlatform) buildBwrapArgs(profile domain.SandboxProfile, tmpFiles *[]string) ([]string, error) {
 	args := []string{
-		"--bind", "/", "/", // full filesystem (private mount namespace)
+		"--ro-bind", "/", "/", // read-only root (prevents writes outside workdir)
 		"--dev", "/dev", // minimal private /dev
 		"--proc", "/proc", // fresh /proc for PID namespace
+		"--tmpfs", "/tmp", // isolated writable /tmp (no host /tmp leaks)
 		"--unshare-pid",  // new PID namespace
 		"--unshare-user", // user namespace (current UID → root inside)
 		"--die-with-parent",
+	}
+
+	// Writable workdir: the only host directory the sandbox can modify.
+	if profile.WorkDir != "" {
+		args = append(args, "--bind", profile.WorkDir, profile.WorkDir)
 	}
 
 	// Hide aigate config directory from the sandboxed process.
@@ -85,6 +91,8 @@ func (p *LinuxPlatform) buildBwrapArgs(profile domain.SandboxProfile, tmpFiles *
 	args = append(args, "--bind", policyPath, "/tmp/.aigate-policy")
 
 	// deny_read: bind a deny marker over files, mount empty tmpfs over dirs.
+	// For files with hardlinks, also deny all alternate paths in the workdir
+	// that share the same inode (hardlinks bypass path-based bind mounts).
 	denyMarkerPath := ""
 	for _, pattern := range profile.Config.DenyRead {
 		paths, _ := resolvePatterns([]string{pattern}, profile.WorkDir)
@@ -106,6 +114,13 @@ func (p *LinuxPlatform) buildBwrapArgs(profile domain.SandboxProfile, tmpFiles *
 					*tmpFiles = append(*tmpFiles, denyMarkerPath)
 				}
 				args = append(args, "--bind", denyMarkerPath, path)
+
+				// Deny hardlinks: find all paths in the workdir that share the
+				// same inode and add deny bind mounts for each.
+				hardlinks := findHardlinks(path, profile.WorkDir)
+				for _, link := range hardlinks {
+					args = append(args, "--bind", denyMarkerPath, link)
+				}
 			}
 		}
 	}
@@ -390,6 +405,46 @@ func buildNetOnlyScript(allowNetHosts, dnsServers []string, cmd string, args []s
 	return sb.String()
 }
 
+// findHardlinks scans searchDir for files that share the same device+inode as
+// targetPath (i.e. hardlinks). Returns paths of hardlinks found, excluding
+// targetPath itself. Only scans when the target has nlink > 1.
+func findHardlinks(targetPath, searchDir string) []string {
+	var targetStat syscall.Stat_t
+	if err := syscall.Stat(targetPath, &targetStat); err != nil {
+		return nil
+	}
+	if targetStat.Nlink <= 1 {
+		return nil
+	}
+
+	var links []string
+	walkForHardlinks(searchDir, targetPath, targetStat.Dev, targetStat.Ino, &links)
+	return links
+}
+
+// walkForHardlinks recursively scans dir for files matching the given dev+ino.
+// Uses os.ReadDir + syscall.Stat directly instead of filepath.WalkDir.
+func walkForHardlinks(dir, excludePath string, dev uint64, ino uint64, links *[]string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		path := filepath.Join(dir, e.Name())
+		if e.IsDir() {
+			walkForHardlinks(path, excludePath, dev, ino, links)
+			continue
+		}
+		if path == excludePath {
+			continue
+		}
+		var st syscall.Stat_t
+		if syscall.Stat(path, &st) == nil && st.Dev == dev && st.Ino == ino {
+			*links = append(*links, path)
+		}
+	}
+}
+
 // resolveForBwrap resolves symlinks in path so it can be used as a bwrap bind
 // destination. bwrap cannot bind-mount over a symlink — it requires an actual
 // file/directory inode. Falls back to the original path if resolution fails.
@@ -444,8 +499,29 @@ func buildBwrapExecDenyArgs(profile domain.SandboxProfile) (bwrapArgs []string, 
 		tmpFiles = append(tmpFiles, stubPath)
 
 		for _, cmd := range fullBlocks {
+			var destPaths []string
+			// Search $PATH for the binary.
 			if binPath, lookErr := exec.LookPath(cmd); lookErr == nil {
-				destPath := resolveForBwrap(binPath)
+				destPaths = append(destPaths, resolveForBwrap(binPath))
+			}
+			// Also search the workdir for local scripts/binaries.
+			if profile.WorkDir != "" {
+				wdPath := filepath.Join(profile.WorkDir, cmd)
+				if info, statErr := os.Stat(wdPath); statErr == nil && !info.IsDir() {
+					resolved := resolveForBwrap(wdPath)
+					alreadyCovered := false
+					for _, dp := range destPaths {
+						if dp == resolved {
+							alreadyCovered = true
+							break
+						}
+					}
+					if !alreadyCovered {
+						destPaths = append(destPaths, resolved)
+					}
+				}
+			}
+			for _, destPath := range destPaths {
 				bwrapArgs = append(bwrapArgs, "--bind", stubPath, destPath)
 			}
 		}

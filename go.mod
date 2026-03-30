@@ -1,8 +1,9 @@
 module github.com/AxeForging/aigate
 
-go 1.25.0
+go 1.25.8
 
 require (
+	github.com/Netflix/go-expect v0.0.0-20220104043353-73e0943537d2
 	github.com/creack/pty v1.1.24
 	github.com/rs/zerolog v1.34.0
 	github.com/urfave/cli v1.22.17
@@ -11,7 +12,6 @@ require (
 )
 
 require (
-	github.com/Netflix/go-expect v0.0.0-20220104043353-73e0943537d2 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

@@ -160,13 +160,38 @@ func cleanupTmp(tmp []string) {
 	}
 }
 
-func TestBuildBwrapArgs_FullFilesystem(t *testing.T) {
+func TestBuildBwrapArgs_ReadOnlyRoot(t *testing.T) {
 	profile := domain.SandboxProfile{Config: domain.Config{}, WorkDir: "/tmp"}
 	args, tmp := setupBwrapArgsTest(t, profile)
 	defer cleanupTmp(tmp)
 
-	if !containsTriple(args, "--bind", "/", "/") {
-		t.Errorf("args should contain --bind / /, got: %v", args)
+	if !containsTriple(args, "--ro-bind", "/", "/") {
+		t.Errorf("args should contain --ro-bind / /, got: %v", args)
+	}
+	// Must NOT have --bind / / (read-write root)
+	if containsTriple(args, "--bind", "/", "/") {
+		t.Errorf("args should NOT contain --bind / / (must be --ro-bind), got: %v", args)
+	}
+}
+
+func TestBuildBwrapArgs_WorkdirWritable(t *testing.T) {
+	workDir := t.TempDir()
+	profile := domain.SandboxProfile{Config: domain.Config{}, WorkDir: workDir}
+	args, tmp := setupBwrapArgsTest(t, profile)
+	defer cleanupTmp(tmp)
+
+	if !containsTriple(args, "--bind", workDir, workDir) {
+		t.Errorf("args should contain --bind %q %q for writable workdir, got: %v", workDir, workDir, args)
+	}
+}
+
+func TestBuildBwrapArgs_TmpfsIsolated(t *testing.T) {
+	profile := domain.SandboxProfile{Config: domain.Config{}, WorkDir: "/tmp"}
+	args, tmp := setupBwrapArgsTest(t, profile)
+	defer cleanupTmp(tmp)
+
+	if !containsPair(args, "--tmpfs", "/tmp") {
+		t.Errorf("args should contain --tmpfs /tmp, got: %v", args)
 	}
 }
 
@@ -326,6 +351,57 @@ func TestBuildBwrapArgs_SharedDenyMarkerForMultipleFiles(t *testing.T) {
 	// Both files should share the same deny marker (single temp file)
 	if sources[0] != sources[1] {
 		t.Errorf("two denied files should share the same deny marker: got %q and %q", sources[0], sources[1])
+	}
+}
+
+func TestBuildBwrapArgs_DenyReadHardlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeTestFile(t, tmpDir+"/secret.txt", "secret-data")
+
+	// Create a hardlink to the secret file
+	if err := os.Link(tmpDir+"/secret.txt", tmpDir+"/hardlink.txt"); err != nil {
+		t.Skip("hardlinks not supported on this filesystem")
+	}
+
+	profile := domain.SandboxProfile{
+		Config:  domain.Config{DenyRead: []string{"secret.txt"}},
+		WorkDir: tmpDir,
+	}
+	args, tmp := setupBwrapArgsTest(t, profile)
+	defer cleanupTmp(tmp)
+
+	// Both the original AND the hardlink should have deny bind mounts
+	secretPath := tmpDir + "/secret.txt"
+	hardlinkPath := tmpDir + "/hardlink.txt"
+	if !hasBwrapBindDest(args, secretPath) {
+		t.Errorf("args should bind deny marker over %q", secretPath)
+	}
+	if !hasBwrapBindDest(args, hardlinkPath) {
+		t.Errorf("args should bind deny marker over hardlink %q (same inode)", hardlinkPath)
+	}
+}
+
+func TestBuildBwrapExecDenyArgs_WorkdirBinary(t *testing.T) {
+	tmpDir := t.TempDir()
+	blockedBin := tmpDir + "/blocked-tool"
+	writeTestFile(t, blockedBin, "#!/bin/sh\necho BLOCKED\n")
+	if err := os.Chmod(blockedBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	profile := domain.SandboxProfile{
+		Config:  domain.Config{DenyExec: []string{"blocked-tool"}},
+		WorkDir: tmpDir,
+	}
+	args, tmp, err := buildBwrapExecDenyArgs(profile)
+	defer cleanupTmp(tmp)
+	if err != nil {
+		t.Fatalf("buildBwrapExecDenyArgs() error = %v", err)
+	}
+
+	// The workdir binary should be covered by a deny bind mount
+	if !hasBwrapBindDest(args, blockedBin) {
+		t.Errorf("args should bind deny stub over workdir binary %q, got: %v", blockedBin, args)
 	}
 }
 
@@ -733,8 +809,8 @@ func TestAppendBwrapNetArgs_IsolationFlagsFromBuildBwrapArgs(t *testing.T) {
 			t.Errorf("args should contain %q, got: %v", flag, args)
 		}
 	}
-	if !containsTriple(args, "--bind", "/", "/") {
-		t.Errorf("args should contain --bind / /, got: %v", args)
+	if !containsTriple(args, "--ro-bind", "/", "/") {
+		t.Errorf("args should contain --ro-bind / /, got: %v", args)
 	}
 }
 
