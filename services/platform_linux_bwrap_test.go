@@ -727,7 +727,7 @@ func TestRunSandboxedDispatch_FallsBackToUnshareWhenNoBwrap(t *testing.T) {
 // ── buildNetOnlyScript ───────────────────────────────────────────────────────
 
 func TestBuildNetOnlyScript_HasNetworkSetup(t *testing.T) {
-	script := buildNetOnlyScript(nil, nil, "echo", []string{"hello"})
+	script := buildNetOnlyScript(nil, nil, nil, false, "echo", []string{"hello"})
 
 	for _, want := range []string{
 		"mount --make-rprivate /",
@@ -745,7 +745,7 @@ func TestBuildNetOnlyScript_HasNetworkSetup(t *testing.T) {
 
 func TestBuildNetOnlyScript_HasNoAigateMarkers(t *testing.T) {
 	// bwrap handles policy/mount/exec isolation — the net-only script should not.
-	script := buildNetOnlyScript(nil, nil, "echo", nil)
+	script := buildNetOnlyScript(nil, nil, nil, false, "echo", nil)
 
 	for _, forbidden := range []string{
 		"aigate-policy",
@@ -762,6 +762,7 @@ func TestBuildNetOnlyScript_AllowNetRules(t *testing.T) {
 	script := buildNetOnlyScript(
 		[]string{"api.anthropic.com", "1.2.3.4"},
 		[]string{"8.8.8.8"},
+		nil, false,
 		"echo", nil,
 	)
 
@@ -779,9 +780,49 @@ func TestBuildNetOnlyScript_AllowNetRules(t *testing.T) {
 	}
 }
 
+// IPv6 path through the bwrap net-only script. Mirrors the v4 assertions plus
+// the fd00::3 forwarder and ip6tables REJECT.
+func TestBuildNetOnlyScript_IPv6Rules(t *testing.T) {
+	script := buildNetOnlyScript(
+		[]string{"api.anthropic.com"},
+		[]string{"8.8.8.8"},
+		[]string{"2001:4860:4860::8888"},
+		true,
+		"echo", nil,
+	)
+	for _, want := range []string{
+		"nameserver fd00::3",
+		"ip6tables -A OUTPUT -o lo -j ACCEPT",
+		"ip6tables -A OUTPUT -d 2001:4860:4860::8888 -j ACCEPT",
+		`getent ahostsv6 "api.anthropic.com"`,
+		"ip6tables -A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script should contain %q, got:\n%s", want, script)
+		}
+	}
+}
+
+// Guards against partial-v6 leakage: when ipv6Enabled=false the script must
+// be 100% v4 — no ip6tables, no fd00::3, no ahostsv6.
+func TestBuildNetOnlyScript_NoIPv6WhenDisabled(t *testing.T) {
+	script := buildNetOnlyScript(
+		[]string{"api.anthropic.com"},
+		[]string{"8.8.8.8"},
+		[]string{"2001:4860:4860::8888"}, // present but should be ignored
+		false,
+		"echo", nil,
+	)
+	for _, forbidden := range []string{"ip6tables", "fd00::3", "ahostsv6", "2001:4860"} {
+		if strings.Contains(script, forbidden) {
+			t.Errorf("ipv6Enabled=false must not include %q, got:\n%s", forbidden, script)
+		}
+	}
+}
+
 func TestBuildNetOnlyScript_ArgWithSpaces(t *testing.T) {
 	// Verify that shellEscape fix propagates: args with spaces are quoted.
-	script := buildNetOnlyScript(nil, nil, "python3", []string{"my script.py"})
+	script := buildNetOnlyScript(nil, nil, nil, false, "python3", []string{"my script.py"})
 	if !strings.Contains(script, "'my script.py'") {
 		t.Errorf("arg with spaces should be single-quoted in net-only script, got:\n%s", script)
 	}
@@ -794,7 +835,7 @@ func TestBuildNetOnlyScript_ArgWithSpaces(t *testing.T) {
 // the arg construction helpers rather than the executor call.
 
 func TestAppendBwrapNetArgs_HasUnshareNetAndInfoFd(t *testing.T) {
-	args := appendBwrapNetArgs(nil, []string{"example.com"}, []string{"8.8.8.8"}, "echo", []string{"hi"})
+	args := appendBwrapNetArgs(nil, []string{"example.com"}, []string{"8.8.8.8"}, nil, false, "echo", []string{"hi"})
 
 	if !containsFlag(args, "--unshare-net") {
 		t.Errorf("args should contain --unshare-net, got: %v", args)
@@ -805,7 +846,7 @@ func TestAppendBwrapNetArgs_HasUnshareNetAndInfoFd(t *testing.T) {
 }
 
 func TestAppendBwrapNetArgs_InnerScriptPassedToSh(t *testing.T) {
-	args := appendBwrapNetArgs(nil, []string{"example.com"}, nil, "echo", []string{"hello"})
+	args := appendBwrapNetArgs(nil, []string{"example.com"}, nil, nil, false, "echo", []string{"hello"})
 
 	sepIdx := -1
 	for i, a := range args {
@@ -844,7 +885,7 @@ func TestAppendBwrapNetArgs_IsolationFlagsFromBuildBwrapArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildBwrapArgs error: %v", err)
 	}
-	args := appendBwrapNetArgs(base, profile.Config.AllowNet, nil, "echo", nil)
+	args := appendBwrapNetArgs(base, profile.Config.AllowNet, nil, nil, false, "echo", nil)
 
 	for _, flag := range []string{"--unshare-user", "--unshare-pid", "--die-with-parent", "--unshare-net"} {
 		if !containsFlag(args, flag) {
@@ -857,7 +898,7 @@ func TestAppendBwrapNetArgs_IsolationFlagsFromBuildBwrapArgs(t *testing.T) {
 }
 
 func TestAppendBwrapNetArgs_NoAigateMarkersInInnerScript(t *testing.T) {
-	args := appendBwrapNetArgs(nil, nil, nil, "echo", nil)
+	args := appendBwrapNetArgs(nil, nil, nil, nil, false, "echo", nil)
 	script := ""
 	for i, a := range args {
 		if a == "-c" && i+1 < len(args) {
@@ -869,6 +910,35 @@ func TestAppendBwrapNetArgs_NoAigateMarkersInInnerScript(t *testing.T) {
 			t.Errorf("inner script should not contain %q (bwrap handles this)", forbidden)
 		}
 	}
+}
+
+func TestSlirpArgs(t *testing.T) {
+	t.Run("v4-only does not pass --enable-ipv6", func(t *testing.T) {
+		args := slirpArgs(1234, false)
+		want := []string{"--configure", "1234", "tap0"}
+		if len(args) != len(want) {
+			t.Fatalf("len = %d, want %d (%v)", len(args), len(want), args)
+		}
+		for i := range want {
+			if args[i] != want[i] {
+				t.Errorf("args[%d] = %q, want %q", i, args[i], want[i])
+			}
+		}
+	})
+
+	t.Run("v6-enabled prepends --enable-ipv6", func(t *testing.T) {
+		args := slirpArgs(1234, true)
+		if len(args) == 0 || args[0] != "--enable-ipv6" {
+			t.Errorf("first arg should be --enable-ipv6, got: %v", args)
+		}
+		// Configure and tap0 must still be present in order.
+		if !containsPair(args, "--configure", "1234") {
+			t.Errorf("args should contain --configure 1234, got: %v", args)
+		}
+		if args[len(args)-1] != "tap0" {
+			t.Errorf("last arg should be tap0, got: %v", args)
+		}
+	})
 }
 
 // TestRunSandboxedDispatch_BwrapNetFilter is a smoke test that actually executes

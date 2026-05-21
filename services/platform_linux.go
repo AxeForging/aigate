@@ -226,6 +226,34 @@ func hasSlirp4netns() bool {
 	return err == nil
 }
 
+// hasIp6tables checks whether ip6tables is available on the system.
+func hasIp6tables() bool {
+	_, err := exec.LookPath("ip6tables")
+	return err == nil
+}
+
+// kernelIPv6Enabled returns true when the kernel has IPv6 globally enabled.
+// Some distros ship with ipv6.disable=1 or sysctl net.ipv6.conf.all.disable_ipv6=1;
+// in those cases slirp4netns --enable-ipv6 silently produces a sandbox with no
+// reachable v6, and ip6tables -A in the inner namespace fails. Refusing v6 in
+// that case keeps the sandbox in a known-good v4-only state.
+func kernelIPv6Enabled() bool {
+	data, err := os.ReadFile("/proc/sys/net/ipv6/conf/all/disable_ipv6")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(data)) == "0"
+}
+
+// ipv6SandboxSupported returns true when the host has everything needed to run
+// an IPv6-enabled sandbox safely: the kernel allows v6, and ip6tables is
+// available to install the egress filter. If either is missing we fall back to
+// IPv4-only — never partial v6, since a partial filter is worse than no v6 at
+// all (silent egress bypass).
+func ipv6SandboxSupported() bool {
+	return kernelIPv6Enabled() && hasIp6tables()
+}
+
 // resolveAllowedIPs resolves a list of hostnames/IPs to deduplicated IPv4 addresses.
 func resolveAllowedIPs(hosts []string) []string {
 	seen := make(map[string]bool)
@@ -329,17 +357,19 @@ func splitDNSByFamily(servers []string) (v4, v6 []string) {
 // unprivileged process lacks CAP_SYS_ADMIN in its own (init) user namespace.
 func (p *LinuxPlatform) runWithNetFilter(profile domain.SandboxProfile, cmd string, args []string, stdout, stderr io.Writer) error {
 	dnsV4, dnsV6 := splitDNSByFamily(getSystemDNS())
+	ipv6Enabled := ipv6SandboxSupported()
+	if !ipv6Enabled {
+		dnsV6 = nil
+	}
 	helpers.Log.Info().
 		Strs("allow_net", profile.Config.AllowNet).
 		Strs("dns_servers_v4", dnsV4).
 		Strs("dns_servers_v6", dnsV6).
+		Bool("ipv6", ipv6Enabled).
 		Msg("starting network-filtered sandbox")
 
-	// IPv6 nameservers are dropped: the sandbox is IPv4-only (slirp4netns NAT,
-	// iptables-only rules). Feeding v6 addrs to iptables -d produces
-	// "host/network not found" errors. See issue #8.
-	innerScript := buildNetFilterScript(profile.Config.AllowNet, dnsV4, profile, cmd, args)
-	outerScript := buildOrchestrationScript(innerScript)
+	innerScript := buildNetFilterScript(profile.Config.AllowNet, dnsV4, dnsV6, ipv6Enabled, profile, cmd, args)
+	outerScript := buildOrchestrationScript(innerScript, ipv6Enabled)
 
 	return p.exec.RunPassthroughWith(stdout, stderr, "unshare", "--user", "--map-root-user", "--", "sh", "-c", outerScript)
 }
@@ -349,8 +379,9 @@ func (p *LinuxPlatform) runWithNetFilter(profile domain.SandboxProfile, cmd stri
 //
 // It backgrounds the sandbox (in a new net namespace) while preserving stdin
 // via fd 3, then launches slirp4netns in the foreground (user ns + host network)
-// to provide connectivity.
-func buildOrchestrationScript(innerScript string) string {
+// to provide connectivity. When ipv6Enabled is true, slirp4netns is launched
+// with --enable-ipv6 so the inner namespace gets a v6 NAT path too.
+func buildOrchestrationScript(innerScript string, ipv6Enabled bool) string {
 	encoded := base64.StdEncoding.EncodeToString([]byte(innerScript))
 
 	var sb strings.Builder
@@ -374,7 +405,11 @@ func buildOrchestrationScript(innerScript string) string {
 
 	// Launch slirp4netns: runs in user ns (has CAP_SYS_ADMIN) + host network.
 	// Suppress stdout (verbose protocol debug), keep stderr for real errors.
-	sb.WriteString("slirp4netns --configure $_SANDBOX_PID tap0 >/dev/null &\n")
+	if ipv6Enabled {
+		sb.WriteString("slirp4netns --enable-ipv6 --configure $_SANDBOX_PID tap0 >/dev/null &\n")
+	} else {
+		sb.WriteString("slirp4netns --configure $_SANDBOX_PID tap0 >/dev/null &\n")
+	}
 	sb.WriteString("_SLIRP_PID=$!\n")
 
 	// Wait for the sandbox to exit, then clean up.
@@ -387,10 +422,87 @@ func buildOrchestrationScript(innerScript string) string {
 	return sb.String()
 }
 
+// writeWaitForTap0 emits a busy-loop that blocks until slirp4netns has
+// attached an address to tap0. grep -q inet matches both `inet ` (v4) and
+// `inet6 ` (v6 lines), so it works in either mode.
+func writeWaitForTap0(sb *strings.Builder) {
+	sb.WriteString("for i in $(seq 1 100); do ip addr show tap0 2>/dev/null | grep -q inet && break; sleep 0.05; done\n")
+}
+
+// writeResolvConf points the sandbox's /etc/resolv.conf at the slirp4netns
+// DNS forwarder(s). When ipv6Enabled is true, fd00::3 is added so v6-only
+// hostnames resolve from inside the sandbox.
+func writeResolvConf(sb *strings.Builder, ipv6Enabled bool) {
+	sb.WriteString("echo 'nameserver 10.0.2.3' > /tmp/.aigate-resolv\n")
+	if ipv6Enabled {
+		sb.WriteString("echo 'nameserver fd00::3' >> /tmp/.aigate-resolv\n")
+	}
+	sb.WriteString("mount --bind /tmp/.aigate-resolv /etc/resolv.conf 2>/dev/null || ")
+	sb.WriteString("mount --bind /tmp/.aigate-resolv $(readlink -f /etc/resolv.conf) 2>/dev/null || true\n")
+}
+
+// writeIPv4Rules emits the iptables OUTPUT chain that the sandbox enforces:
+// loopback + DNS port + allowed DNS servers + per-host allow_net (resolved via
+// getent inside the namespace) + final REJECT.
+//
+// Layout matches the v6 mirror in writeIPv6Rules — keep them in sync.
+func writeIPv4Rules(sb *strings.Builder, allowNetHosts, dnsServers []string) {
+	sb.WriteString("iptables -A OUTPUT -o lo -j ACCEPT\n")
+	sb.WriteString("iptables -A OUTPUT -p udp --dport 53 -j ACCEPT\n")
+	sb.WriteString("iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT\n")
+	for _, dns := range dnsServers {
+		fmt.Fprintf(sb, "iptables -A OUTPUT -d %s -j ACCEPT\n", dns)
+	}
+	// Wait for DNS to actually work by testing a REAL remote query.
+	// Using localhost previously was wrong — it resolves from /etc/hosts,
+	// not DNS, so it passed before slirp4netns DNS (10.0.2.3) was ready.
+	if len(allowNetHosts) > 0 {
+		fmt.Fprintf(sb, "for i in $(seq 1 50); do getent ahostsv4 %q >/dev/null 2>&1 && break; sleep 0.1; done\n", allowNetHosts[0])
+	}
+	// Resolve each AllowNet entry INSIDE the namespace and add iptables rules.
+	// This ensures the IPs match what the sandboxed process will get from DNS,
+	// avoiding mismatches from CDN anycast / DNS load balancing.
+	for _, host := range allowNetHosts {
+		fmt.Fprintf(sb, "for _attempt in 1 2 3; do _ips=$(getent ahostsv4 %q 2>/dev/null | awk '{print $1}' | sort -u); [ -n \"$_ips\" ] && break; sleep 0.5; done; for _ip in $_ips; do iptables -A OUTPUT -d \"$_ip\" -j ACCEPT; done\n", host)
+	}
+	sb.WriteString("iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited\n")
+}
+
+// writeIPv6Rules emits the ip6tables OUTPUT chain. Mirrors writeIPv4Rules but
+// resolves AllowNet hosts via getent ahostsv6 (AAAA records) and uses
+// icmp6-adm-prohibited for the final REJECT.
+//
+// Only called when ipv6SandboxSupported() == true — otherwise the sandbox is
+// v4-only and v6 egress is unreachable via slirp4netns anyway.
+func writeIPv6Rules(sb *strings.Builder, allowNetHosts, dnsServers []string) {
+	sb.WriteString("ip6tables -A OUTPUT -o lo -j ACCEPT\n")
+	sb.WriteString("ip6tables -A OUTPUT -p udp --dport 53 -j ACCEPT\n")
+	sb.WriteString("ip6tables -A OUTPUT -p tcp --dport 53 -j ACCEPT\n")
+	for _, dns := range dnsServers {
+		fmt.Fprintf(sb, "ip6tables -A OUTPUT -d %s -j ACCEPT\n", dns)
+	}
+	if len(allowNetHosts) > 0 {
+		// v6 DNS readiness probe. We don't wait here if the host has no AAAA —
+		// resolution simply returns empty and no ip6tables rules get added,
+		// which means egress to v6 for that host is blocked (final REJECT).
+		// That's fine: the v4 path still allows it.
+		fmt.Fprintf(sb, "for i in $(seq 1 50); do getent ahostsv6 %q >/dev/null 2>&1 && break; sleep 0.1; done\n", allowNetHosts[0])
+	}
+	for _, host := range allowNetHosts {
+		fmt.Fprintf(sb, "for _attempt in 1 2 3; do _ips=$(getent ahostsv6 %q 2>/dev/null | awk '{print $1}' | sort -u); [ -n \"$_ips\" ] && break; sleep 0.5; done; for _ip in $_ips; do ip6tables -A OUTPUT -d \"$_ip\" -j ACCEPT; done\n", host)
+	}
+	sb.WriteString("ip6tables -A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited\n")
+}
+
 // buildNetFilterScript builds the shell script that runs inside the network namespace.
 // allowNetHosts are the original hostnames/IPs from the config — resolution happens
 // inside the namespace so the iptables rules match what the sandboxed process will see.
-func buildNetFilterScript(allowNetHosts, dnsServers []string, profile domain.SandboxProfile, cmd string, args []string) string {
+//
+// When ipv6Enabled is true, the script also writes a parallel ip6tables filter:
+// loopback + DNS port 53 + dnsServersV6 + AAAA-resolved allowNetHosts + final
+// REJECT. ipv6Enabled must only be set when the caller has verified ip6tables
+// is available — a partial v6 ruleset is worse than none.
+func buildNetFilterScript(allowNetHosts, dnsServersV4, dnsServersV6 []string, ipv6Enabled bool, profile domain.SandboxProfile, cmd string, args []string) string {
 	var sb strings.Builder
 
 	// Ensure inherited mounts are private so bind mounts work in all environments.
@@ -401,41 +513,12 @@ func buildNetFilterScript(allowNetHosts, dnsServers []string, profile domain.San
 	// "fatal library error, lookup self".
 	sb.WriteString("mount -t proc proc /proc\n")
 
-	// Wait for tap0 interface to come up (slirp4netns creates it)
-	sb.WriteString("for i in $(seq 1 100); do ip addr show tap0 2>/dev/null | grep -q inet && break; sleep 0.05; done\n")
-
-	// Set up DNS: point resolv.conf at slirp4netns DNS forwarder (10.0.2.3)
-	sb.WriteString("echo 'nameserver 10.0.2.3' > /tmp/.aigate-resolv\n")
-	sb.WriteString("mount --bind /tmp/.aigate-resolv /etc/resolv.conf 2>/dev/null || ")
-	sb.WriteString("mount --bind /tmp/.aigate-resolv $(readlink -f /etc/resolv.conf) 2>/dev/null || true\n")
-
-	// iptables rules: allow loopback + DNS before anything else
-	// (DNS must work for the host resolution below)
-	sb.WriteString("iptables -A OUTPUT -o lo -j ACCEPT\n")
-	sb.WriteString("iptables -A OUTPUT -p udp --dport 53 -j ACCEPT\n")
-	sb.WriteString("iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT\n")
-
-	// Allow traffic to upstream DNS servers (needed for slirp4netns forwarding)
-	for _, dns := range dnsServers {
-		fmt.Fprintf(&sb, "iptables -A OUTPUT -d %s -j ACCEPT\n", dns)
+	writeWaitForTap0(&sb)
+	writeResolvConf(&sb, ipv6Enabled)
+	writeIPv4Rules(&sb, allowNetHosts, dnsServersV4)
+	if ipv6Enabled {
+		writeIPv6Rules(&sb, allowNetHosts, dnsServersV6)
 	}
-
-	// Wait for DNS to actually work by testing a REAL remote query.
-	// Using localhost previously was wrong — it resolves from /etc/hosts,
-	// not DNS, so it passed before slirp4netns DNS (10.0.2.3) was ready.
-	if len(allowNetHosts) > 0 {
-		fmt.Fprintf(&sb, "for i in $(seq 1 50); do getent ahostsv4 %q >/dev/null 2>&1 && break; sleep 0.1; done\n", allowNetHosts[0])
-	}
-
-	// Resolve each AllowNet entry INSIDE the namespace and add iptables rules.
-	// This ensures the IPs match what the sandboxed process will get from DNS,
-	// avoiding mismatches from CDN anycast / DNS load balancing.
-	// Each host retries up to 3 times to handle transient DNS hiccups.
-	for _, host := range allowNetHosts {
-		fmt.Fprintf(&sb, "for _attempt in 1 2 3; do _ips=$(getent ahostsv4 %q 2>/dev/null | awk '{print $1}' | sort -u); [ -n \"$_ips\" ] && break; sleep 0.5; done; for _ip in $_ips; do iptables -A OUTPUT -d \"$_ip\" -j ACCEPT; done\n", host)
-	}
-
-	sb.WriteString("iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited\n")
 
 	// Write policy file + mount overrides (deny_read markers point here)
 	sb.WriteString(buildPolicyFile(profile))

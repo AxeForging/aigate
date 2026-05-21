@@ -345,6 +345,7 @@ func TestBuildNetFilterScript(t *testing.T) {
 		script := buildNetFilterScript(
 			[]string{"api.anthropic.com", "1.2.3.4"},
 			[]string{"8.8.8.8"},
+			nil, false,
 			profile, "echo", []string{"hello"},
 		)
 		// Hostnames should be resolved inside the namespace via getent ahostsv4
@@ -364,6 +365,7 @@ func TestBuildNetFilterScript(t *testing.T) {
 		script := buildNetFilterScript(
 			[]string{"example.com"},
 			[]string{"8.8.8.8", "1.1.1.1"},
+			nil, false,
 			profile, "echo", []string{"hello"},
 		)
 		if !strings.Contains(script, "iptables -A OUTPUT -p udp --dport 53 -j ACCEPT") {
@@ -391,6 +393,7 @@ func TestBuildNetFilterScript(t *testing.T) {
 		script := buildNetFilterScript(
 			nil,
 			[]string{"192.168.178.1"}, // post-splitDNSByFamily list
+			nil, false,
 			profile, "echo", nil,
 		)
 		// Sanity: v4 rule present.
@@ -414,21 +417,21 @@ func TestBuildNetFilterScript(t *testing.T) {
 	})
 
 	t.Run("contains resolv.conf fix", func(t *testing.T) {
-		script := buildNetFilterScript(nil, nil, profile, "echo", nil)
+		script := buildNetFilterScript(nil, nil, nil, false, profile, "echo", nil)
 		if !strings.Contains(script, "nameserver 10.0.2.3") {
 			t.Error("script should set resolv.conf to slirp4netns DNS")
 		}
 	})
 
 	t.Run("contains wait for tap0", func(t *testing.T) {
-		script := buildNetFilterScript(nil, nil, profile, "echo", nil)
+		script := buildNetFilterScript(nil, nil, nil, false, profile, "echo", nil)
 		if !strings.Contains(script, "ip addr show tap0") {
 			t.Error("script should wait for tap0 interface")
 		}
 	})
 
 	t.Run("waits for real DNS before resolving hosts", func(t *testing.T) {
-		script := buildNetFilterScript([]string{"example.com", "other.com"}, nil, profile, "echo", nil)
+		script := buildNetFilterScript([]string{"example.com", "other.com"}, nil, nil, false, profile, "echo", nil)
 		// DNS readiness check should use the FIRST AllowNet host, not localhost
 		dnsWaitIdx := strings.Index(script, "getent ahostsv4 \"example.com\" >/dev/null")
 		if dnsWaitIdx == -1 {
@@ -440,16 +443,63 @@ func TestBuildNetFilterScript(t *testing.T) {
 	})
 
 	t.Run("retries host resolution on failure", func(t *testing.T) {
-		script := buildNetFilterScript([]string{"example.com"}, nil, profile, "echo", nil)
+		script := buildNetFilterScript([]string{"example.com"}, nil, nil, false, profile, "echo", nil)
 		if !strings.Contains(script, "_attempt in 1 2 3") {
 			t.Error("should retry getent resolution")
 		}
 	})
 
 	t.Run("contains target command", func(t *testing.T) {
-		script := buildNetFilterScript(nil, nil, profile, "mycommand", []string{"--flag", "value"})
+		script := buildNetFilterScript(nil, nil, nil, false, profile, "mycommand", []string{"--flag", "value"})
 		if !strings.Contains(script, "exec mycommand --flag value") {
 			t.Errorf("script should contain exec of target command, got:\n%s", script)
+		}
+	})
+
+	// IPv6 path: when ipv6Enabled=true, the script must also emit ip6tables
+	// rules, a v6 DNS forwarder, and AAAA resolution for allow_net hosts.
+	t.Run("emits ip6tables rules when ipv6Enabled", func(t *testing.T) {
+		script := buildNetFilterScript(
+			[]string{"example.com"},
+			[]string{"192.168.178.1"},
+			[]string{"2001:4860:4860::8888"},
+			true,
+			profile, "echo", nil,
+		)
+		for _, want := range []string{
+			"ip6tables -A OUTPUT -o lo -j ACCEPT",
+			"ip6tables -A OUTPUT -p udp --dport 53 -j ACCEPT",
+			"ip6tables -A OUTPUT -p tcp --dport 53 -j ACCEPT",
+			"ip6tables -A OUTPUT -d 2001:4860:4860::8888 -j ACCEPT",
+			"getent ahostsv6 \"example.com\"",
+			"ip6tables -A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited",
+			"nameserver fd00::3",
+		} {
+			if !strings.Contains(script, want) {
+				t.Errorf("script should contain %q, got:\n%s", want, script)
+			}
+		}
+		// v4 rules must still be present.
+		if !strings.Contains(script, "iptables -A OUTPUT -d 192.168.178.1 -j ACCEPT") {
+			t.Error("v4 rules must still be emitted when ipv6Enabled=true")
+		}
+	})
+
+	t.Run("omits ip6tables and fd00::3 when ipv6Enabled=false", func(t *testing.T) {
+		script := buildNetFilterScript(
+			[]string{"example.com"},
+			[]string{"192.168.178.1"},
+			nil, false,
+			profile, "echo", nil,
+		)
+		if strings.Contains(script, "ip6tables") {
+			t.Errorf("script must not contain ip6tables when ipv6Enabled=false, got:\n%s", script)
+		}
+		if strings.Contains(script, "fd00::3") {
+			t.Errorf("script must not include v6 forwarder when ipv6Enabled=false")
+		}
+		if strings.Contains(script, "getent ahostsv6") {
+			t.Errorf("script must not resolve AAAA when ipv6Enabled=false")
 		}
 	})
 }
@@ -486,7 +536,7 @@ func TestBuildOrchestrationScript(t *testing.T) {
 	inner := "echo hello world\n"
 
 	t.Run("embeds inner script via base64", func(t *testing.T) {
-		script := buildOrchestrationScript(inner)
+		script := buildOrchestrationScript(inner, false)
 		encoded := base64.StdEncoding.EncodeToString([]byte(inner))
 		if !strings.Contains(script, encoded) {
 			t.Error("orchestration script should contain base64-encoded inner script")
@@ -494,7 +544,7 @@ func TestBuildOrchestrationScript(t *testing.T) {
 	})
 
 	t.Run("preserves stdin via fd 3", func(t *testing.T) {
-		script := buildOrchestrationScript(inner)
+		script := buildOrchestrationScript(inner, false)
 		if !strings.Contains(script, "exec 3<&0") {
 			t.Error("should save stdin to fd 3")
 		}
@@ -504,7 +554,7 @@ func TestBuildOrchestrationScript(t *testing.T) {
 	})
 
 	t.Run("uses two-layer unshare", func(t *testing.T) {
-		script := buildOrchestrationScript(inner)
+		script := buildOrchestrationScript(inner, false)
 		// Inner unshare should create net namespace (outer only creates user ns)
 		if !strings.Contains(script, "unshare --net --mount --pid --fork") {
 			t.Error("inner unshare should create net/mount/pid namespaces")
@@ -512,14 +562,24 @@ func TestBuildOrchestrationScript(t *testing.T) {
 	})
 
 	t.Run("runs slirp4netns inside user namespace", func(t *testing.T) {
-		script := buildOrchestrationScript(inner)
+		script := buildOrchestrationScript(inner, false)
 		if !strings.Contains(script, "slirp4netns --configure $_SANDBOX_PID tap0") {
 			t.Error("should launch slirp4netns with sandbox PID")
+		}
+		if strings.Contains(script, "--enable-ipv6") {
+			t.Error("ipv6Enabled=false should not enable v6 on slirp4netns")
+		}
+	})
+
+	t.Run("passes --enable-ipv6 to slirp4netns when ipv6Enabled=true", func(t *testing.T) {
+		script := buildOrchestrationScript(inner, true)
+		if !strings.Contains(script, "slirp4netns --enable-ipv6 --configure $_SANDBOX_PID tap0") {
+			t.Errorf("ipv6Enabled=true should pass --enable-ipv6 to slirp4netns, got:\n%s", script)
 		}
 	})
 
 	t.Run("waits for namespace and cleans up", func(t *testing.T) {
-		script := buildOrchestrationScript(inner)
+		script := buildOrchestrationScript(inner, false)
 		if !strings.Contains(script, "readlink /proc/$_SANDBOX_PID/ns/net") {
 			t.Error("should wait for net namespace to differ from host")
 		}
@@ -801,7 +861,7 @@ func TestBuildNetFilterScript_MountMakeRprivate(t *testing.T) {
 		Config:  domain.Config{},
 		WorkDir: "/tmp",
 	}
-	script := buildNetFilterScript(nil, nil, profile, "echo", nil)
+	script := buildNetFilterScript(nil, nil, nil, false, profile, "echo", nil)
 	if !strings.Contains(script, "mount --make-rprivate /") {
 		t.Error("net filter script should start with mount --make-rprivate /")
 	}
@@ -930,7 +990,7 @@ func TestBuildNetFilterScript_IncludesExecDeny(t *testing.T) {
 		WorkDir: "/tmp",
 	}
 
-	script := buildNetFilterScript(nil, nil, profile, "echo", []string{"hello"})
+	script := buildNetFilterScript(nil, nil, nil, false, profile, "echo", []string{"hello"})
 	if !strings.Contains(script, "/tmp/.aigate-deny-exec") {
 		t.Error("net filter script should include exec deny overrides")
 	}
