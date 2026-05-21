@@ -13,13 +13,21 @@ import (
 
 type RunnerService struct {
 	platform Platform
+	audit    *AuditService
 }
 
 func NewRunnerService(platform Platform) *RunnerService {
 	return &RunnerService{platform: platform}
 }
 
+func NewRunnerServiceWithAudit(platform Platform, audit *AuditService) *RunnerService {
+	return &RunnerService{platform: platform, audit: audit}
+}
+
 func (s *RunnerService) Run(profile domain.SandboxProfile, cmd string, args []string) error {
+	if s.audit != nil {
+		s.audit.LogRunStarted(profile, cmd, args)
+	}
 	// Extract the base command name for deny_exec checking
 	baseName := filepath.Base(cmd)
 	for _, denied := range profile.Config.DenyExec {
@@ -29,6 +37,9 @@ func (s *RunnerService) Run(profile domain.SandboxProfile, cmd string, args []st
 			if parts[0] == baseName || parts[0] == cmd {
 				for _, arg := range args {
 					if arg == parts[1] {
+						if s.audit != nil {
+							s.audit.LogBlocked(profile, cmd, args, "deny_exec", "preflight", fmt.Sprintf("%q with subcommand %q is in the deny_exec list", cmd, parts[1]))
+						}
 						return fmt.Errorf("%w: %q with subcommand %q is in the deny_exec list", helpers.ErrCommandBlocked, cmd, parts[1])
 					}
 				}
@@ -36,6 +47,9 @@ func (s *RunnerService) Run(profile domain.SandboxProfile, cmd string, args []st
 		} else {
 			// Full command rule: block all usage
 			if denied == baseName || denied == cmd {
+				if s.audit != nil {
+					s.audit.LogBlocked(profile, cmd, args, "deny_exec", "preflight", fmt.Sprintf("%q is in the deny_exec list", cmd))
+				}
 				return fmt.Errorf("%w: %q is in the deny_exec list", helpers.ErrCommandBlocked, cmd)
 			}
 		}
@@ -47,6 +61,10 @@ func (s *RunnerService) Run(profile domain.SandboxProfile, cmd string, args []st
 	}
 	if mw, ok := stderr.(*MaskingWriter); ok {
 		defer mw.Flush() //nolint:errcheck
+	}
+	if s.audit != nil {
+		stdout = NewAuditWriter(stdout, s.audit, profile, cmd, args, "stdout")
+		stderr = NewAuditWriter(stderr, s.audit, profile, cmd, args, "stderr")
 	}
 	return s.platform.RunSandboxed(profile, cmd, args, stdout, stderr)
 }
