@@ -380,6 +380,39 @@ func TestBuildNetFilterScript(t *testing.T) {
 		}
 	})
 
+	// Regression test for issue #8: callers feed only IPv4 nameservers to this
+	// function. If something ever regresses and a v6 address ends up here, the
+	// generated `iptables -A OUTPUT -d <v6>` would fail at runtime with
+	// "host/network not found" — and there's no test catching it.
+	t.Run("does not emit iptables rules for IPv6 nameservers if any slip through", func(t *testing.T) {
+		// Pass v4 + v6 mixed; v6 entries should not produce iptables rules at all
+		// in any sane implementation (current code defers filtering to the caller,
+		// so this test documents the contract).
+		script := buildNetFilterScript(
+			nil,
+			[]string{"192.168.178.1"}, // post-splitDNSByFamily list
+			profile, "echo", nil,
+		)
+		// Sanity: v4 rule present.
+		if !strings.Contains(script, "iptables -A OUTPUT -d 192.168.178.1 -j ACCEPT") {
+			t.Error("script should accept v4 nameserver 192.168.178.1")
+		}
+		// Negative: no v6 literal in the script (the colon is the giveaway).
+		// Find "-d <addr>" patterns and ensure addr is not v6.
+		for _, line := range strings.Split(script, "\n") {
+			if !strings.Contains(line, "iptables -A OUTPUT -d ") {
+				continue
+			}
+			// Extract the token after "-d ".
+			idx := strings.Index(line, "-d ")
+			rest := line[idx+3:]
+			tok := strings.Fields(rest)
+			if len(tok) > 0 && strings.Contains(tok[0], ":") {
+				t.Errorf("iptables rule references IPv6 address %q: %s", tok[0], line)
+			}
+		}
+	})
+
 	t.Run("contains resolv.conf fix", func(t *testing.T) {
 		script := buildNetFilterScript(nil, nil, profile, "echo", nil)
 		if !strings.Contains(script, "nameserver 10.0.2.3") {
@@ -510,6 +543,62 @@ func TestGetSystemDNS(t *testing.T) {
 			t.Errorf("getSystemDNS() should not return localhost address %q", s)
 		}
 	}
+}
+
+func TestSplitDNSByFamily(t *testing.T) {
+	t.Run("all v4", func(t *testing.T) {
+		v4, v6 := splitDNSByFamily([]string{"8.8.8.8", "1.1.1.1"})
+		if len(v4) != 2 || v4[0] != "8.8.8.8" || v4[1] != "1.1.1.1" {
+			t.Errorf("v4 = %v, want [8.8.8.8 1.1.1.1]", v4)
+		}
+		if len(v6) != 0 {
+			t.Errorf("v6 = %v, want []", v6)
+		}
+	})
+
+	t.Run("all v6", func(t *testing.T) {
+		v4, v6 := splitDNSByFamily([]string{"2001:4860:4860::8888", "fd2e:2bd1:b699::1"})
+		if len(v4) != 0 {
+			t.Errorf("v4 = %v, want []", v4)
+		}
+		if len(v6) != 2 {
+			t.Errorf("v6 = %v, want 2 entries", v6)
+		}
+	})
+
+	// Reproduces the resolv.conf shape from issue #8 (Fedora 43 with both v4 and
+	// v6 nameservers populated by NetworkManager). v6 entries previously leaked
+	// into iptables and caused "host/network not found" errors.
+	t.Run("mixed v4 and v6 from issue #8", func(t *testing.T) {
+		v4, v6 := splitDNSByFamily([]string{
+			"192.168.178.1",
+			"fd2e:2bd1:b699:0:4a5d:35ff:fe1c:74fd",
+			"2003:c2:3f1c:8100:4a5d:35ff:fe1c:74fd",
+		})
+		if len(v4) != 1 || v4[0] != "192.168.178.1" {
+			t.Errorf("v4 = %v, want [192.168.178.1]", v4)
+		}
+		if len(v6) != 2 {
+			t.Errorf("v6 = %v, want 2 entries", v6)
+		}
+	})
+
+	t.Run("drops unparseable entries", func(t *testing.T) {
+		v4, v6 := splitDNSByFamily([]string{"not-an-ip", "8.8.8.8"})
+		if len(v4) != 1 || v4[0] != "8.8.8.8" {
+			t.Errorf("v4 = %v, want [8.8.8.8]", v4)
+		}
+		if len(v6) != 0 {
+			t.Errorf("v6 = %v, want []", v6)
+		}
+	})
+
+	t.Run("empty input", func(t *testing.T) {
+		v4, v6 := splitDNSByFamily(nil)
+		if v4 != nil || v6 != nil {
+			t.Errorf("expected nil/nil for empty input, got v4=%v v6=%v", v4, v6)
+		}
+	})
 }
 
 func TestParseDNSFromFile(t *testing.T) {

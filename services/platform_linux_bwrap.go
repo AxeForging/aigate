@@ -214,10 +214,11 @@ func writeTmpFile(pattern, content string) (string, error) {
 // fails with EPERM on systems where network-namespace creation requires
 // CAP_SYS_ADMIN in the initial user namespace.
 func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd string, args []string, stdout, stderr io.Writer) error {
-	dnsServers := getSystemDNS()
+	dnsV4, dnsV6 := splitDNSByFamily(getSystemDNS())
 	helpers.Log.Info().
 		Strs("allow_net", profile.Config.AllowNet).
-		Strs("dns_servers", dnsServers).
+		Strs("dns_servers_v4", dnsV4).
+		Strs("dns_servers_v6", dnsV6).
 		Msg("starting bwrap network-filtered sandbox")
 
 	var tmpFiles []string
@@ -240,7 +241,10 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 	}
 	defer infoR.Close() //nolint:errcheck
 
-	bwrapArgs = appendBwrapNetArgs(bwrapArgs, profile.Config.AllowNet, dnsServers, cmd, args)
+	// IPv6 nameservers are dropped: the sandbox is IPv4-only (slirp4netns NAT,
+	// iptables-only rules). Feeding v6 addrs to iptables -d produces
+	// "host/network not found" errors. See issue #8.
+	bwrapArgs = appendBwrapNetArgs(bwrapArgs, profile.Config.AllowNet, dnsV4, cmd, args)
 
 	bwrapCmd := exec.Command("bwrap", bwrapArgs...)
 	bwrapCmd.ExtraFiles = []*os.File{infoW} // fd 3 in child

@@ -296,6 +296,25 @@ func parseDNSFromFile(path string) []string {
 	return servers
 }
 
+// splitDNSByFamily partitions a nameserver list into IPv4 and IPv6 buckets.
+// Non-parseable entries are dropped (resolv.conf shouldn't have them, but
+// defend anyway — we'd otherwise feed them to iptables and produce shell
+// errors like "host/network 'foo' not found", see issue #8).
+func splitDNSByFamily(servers []string) (v4, v6 []string) {
+	for _, s := range servers {
+		ip := net.ParseIP(s)
+		if ip == nil {
+			continue
+		}
+		if ip.To4() != nil {
+			v4 = append(v4, s)
+		} else {
+			v6 = append(v6, s)
+		}
+	}
+	return v4, v6
+}
+
 // runWithNetFilter runs a command in a network-filtered namespace using slirp4netns.
 //
 // Architecture (two-layer unshare):
@@ -309,13 +328,17 @@ func parseDNSFromFile(path string) []string {
 // setns(CLONE_NEWNET). Launching it from the host fails with EPERM because an
 // unprivileged process lacks CAP_SYS_ADMIN in its own (init) user namespace.
 func (p *LinuxPlatform) runWithNetFilter(profile domain.SandboxProfile, cmd string, args []string, stdout, stderr io.Writer) error {
-	dnsServers := getSystemDNS()
+	dnsV4, dnsV6 := splitDNSByFamily(getSystemDNS())
 	helpers.Log.Info().
 		Strs("allow_net", profile.Config.AllowNet).
-		Strs("dns_servers", dnsServers).
+		Strs("dns_servers_v4", dnsV4).
+		Strs("dns_servers_v6", dnsV6).
 		Msg("starting network-filtered sandbox")
 
-	innerScript := buildNetFilterScript(profile.Config.AllowNet, dnsServers, profile, cmd, args)
+	// IPv6 nameservers are dropped: the sandbox is IPv4-only (slirp4netns NAT,
+	// iptables-only rules). Feeding v6 addrs to iptables -d produces
+	// "host/network not found" errors. See issue #8.
+	innerScript := buildNetFilterScript(profile.Config.AllowNet, dnsV4, profile, cmd, args)
 	outerScript := buildOrchestrationScript(innerScript)
 
 	return p.exec.RunPassthroughWith(stdout, stderr, "unshare", "--user", "--map-root-user", "--", "sh", "-c", outerScript)
