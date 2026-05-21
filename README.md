@@ -50,7 +50,7 @@ AI coding tools rely on application-level permission systems that can be bypasse
 
 - **File isolation** - POSIX ACLs (Linux) / macOS ACLs deny read access to secrets
 - **Process isolation** - Bubblewrap (`bwrap`) + mount namespaces isolate the sandbox declaratively (Linux); Seatbelt on macOS
-- **Network isolation** - `bwrap --unshare-net` + `slirp4netns` + `iptables` restrict egress to allowed domains (Linux)
+- **Network isolation** - `bwrap --unshare-net` + `slirp4netns` + `iptables` (+ `ip6tables` for IPv6 when available) restrict egress to allowed domains (Linux)
 - **Command blocking** - Deny execution of dangerous commands (curl, wget, ssh)
 - **Output masking** - Redact secrets (API keys, tokens) from stdout/stderr before they reach the terminal
 - **Resource limits** - cgroups v2 enforce memory, CPU, PID limits (Linux)
