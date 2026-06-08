@@ -3,7 +3,7 @@
 <div align="center">
   <img src="docs/banner.png" alt="AiGate" width="400">
   <p>
-    <img src="https://img.shields.io/badge/Go-1.24%2B-00ADD8?style=flat-square&logo=go" alt="Go Version">
+    <img src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?style=flat-square&logo=go" alt="Go Version">
     <img src="https://img.shields.io/badge/OS-Linux%20%7C%20macOS%20%7C%20WSL-darkblue?style=flat-square" alt="OS Support">
     <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License">
   </p>
@@ -53,7 +53,7 @@ AI coding tools rely on application-level permission systems that can be bypasse
 - **Network isolation** - `bwrap --unshare-net` + `slirp4netns` + `iptables` (+ `ip6tables` for IPv6 when available) restrict egress to allowed domains (Linux)
 - **Command blocking** - Deny execution of dangerous commands (curl, wget, ssh)
 - **Output masking** - Redact secrets (API keys, tokens) from stdout/stderr before they reach the terminal
-- **Resource limits** - cgroups v2 enforce memory, CPU, PID limits (Linux)
+- **Audit log + dashboard** - Every run and blocked command is recorded to `~/.aigate/audit.jsonl`; `aigate serve` exposes a local web dashboard over it
 - **Tool-agnostic** - Works with any AI tool: Claude Code, Cursor, Copilot, Aider
 - **Sensible defaults** - Ships with deny rules for .env, secrets/, .ssh/, *.pem, etc.
 - **Project-level config** - `.aigate.yaml` extends global rules per project
@@ -79,6 +79,7 @@ aigate deny net --except api.anthropic.com  # Restrict network
 aigate allow read .env                      # Remove a deny rule
 aigate run -- claude                        # Run AI tool in sandbox
 aigate status                               # Show current rules
+aigate serve                                # Local web dashboard over the audit log
 aigate help-ai                              # Show AI-friendly usage examples
 aigate reset --force                        # Remove everything
 ```
