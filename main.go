@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
 	"github.com/AxeForging/aigate/actions"
 	"github.com/AxeForging/aigate/helpers"
+	"github.com/AxeForging/aigate/internal/web"
 	"github.com/AxeForging/aigate/services"
 
 	"github.com/urfave/cli"
@@ -23,8 +25,9 @@ func main() {
 
 	platform := services.DetectPlatform()
 	configSvc := services.NewConfigService()
+	auditSvc := services.NewAuditService(configSvc)
 	ruleSvc := services.NewRuleService()
-	runnerSvc := services.NewRunnerService(platform)
+	runnerSvc := services.NewRunnerServiceWithAudit(platform, auditSvc)
 
 	initAction := actions.NewInitAction(configSvc)
 	setupAction := actions.NewSetupAction(platform, configSvc)
@@ -127,6 +130,30 @@ func main() {
 			Name:   "doctor",
 			Usage:  "Check sandbox prerequisites and show active isolation mode",
 			Action: doctorAction.Execute,
+		},
+		{
+			Name:  "serve",
+			Usage: "Run the local web dashboard",
+			Flags: []cli.Flag{
+				cli.StringFlag{
+					Name:   "addr",
+					Value:  "127.0.0.1:8080",
+					Usage:  "Address to listen on (host:port)",
+					EnvVar: "AIGATE_ADDR",
+				},
+			},
+			Action: func(c *cli.Context) error {
+				srv, err := web.New(web.Options{
+					Addr:      c.String("addr"),
+					ConfigSvc: configSvc,
+					AuditSvc:  auditSvc,
+				})
+				if err != nil {
+					return fmt.Errorf("init web server: %w", err)
+				}
+				fmt.Printf("\n  Open http://%s in your browser.\n\n", srv.Addr())
+				return srv.ListenAndServe(context.Background())
+			},
 		},
 		{
 			Name:   "help-ai",

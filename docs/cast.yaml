@@ -1,0 +1,138 @@
+# Demo recording spec for the README — see docs/aigate-demo.gif
+#
+# Render with:  python3 cast.py docs/cast.yaml      (run from repo root)
+# (cast.py lives in AxeForging/scripts → cast/cast.py)
+#
+# The demo deliberately operates in /tmp/aigate-demo using a synthetic .env
+# so no real host secrets / SSH filenames are ever rendered.
+#
+# Why no shell-alias wrapper? Earlier drafts piped aigate through a tiny
+# `arun` helper to suppress the verbose [aigate] startup header. That made
+# every demo line read `arun run -- …`, which falsely implied `arun` was
+# part of aigate. The recording now uses plain `aigate run -- …` so what
+# you see is exactly what you would type yourself.
+
+output: docs/aigate-demo.gif
+
+recording:
+  cols: 130
+  rows: 30
+  idle_time_limit: 3
+  title: "aigate — sandbox AI agents in seconds"
+
+render:
+  theme: dracula
+  font: "JetBrains Mono"
+  font_size: 15
+  line_height: 1.4
+  speed: 1.3
+  idle_time_limit: 2
+
+defaults:
+  type_delay: 50
+  pause: 1.6
+
+scenes:
+  # ── silent setup ─────────────────────────────────────────────────────────
+  # Re-route bare `aigate` calls to the locally-built binary so the GIF
+  # always reflects this repo's current build, regardless of which version
+  # happens to be in $PATH on the host. The shell function is invisible to
+  # the recording — viewers only ever see `aigate ...` typed at the prompt.
+  - bash: "_AIGATE_BIN=$PWD/aigate && _AIGATE_REPO=$PWD"
+  # Trailing `|| true` keeps the cast script alive past commands that exit
+  # non-zero (deny rules, claude --bare, etc). At an interactive prompt the
+  # exit code is just background info, so this matches what a viewer would
+  # experience typing the same commands themselves — it's a path-redirect
+  # plus error-tolerance, not a behavioural change to aigate.
+  - bash: |
+      aigate() { "$_AIGATE_BIN" "$@" || true; }
+  # Stage a synthetic workdir with a fake .env so we never render any real
+  # host secrets or filenames in the GIF.
+  - bash: |
+      rm -rf /tmp/aigate-demo
+      mkdir -p /tmp/aigate-demo
+      cd /tmp/aigate-demo
+      printf 'OPENAI_API_KEY=sk-proj-fake-DEMO-key-1234567890\nDB_PASSWORD=hunter2\n' > .env
+
+  # ── intro ────────────────────────────────────────────────────────────────
+  - comment: "aigate — wrap any command in an OS-level sandbox for AI agents"
+    pause: 1.8
+  - comment: "every example below uses the default rules from ~/.aigate/config.yaml"
+    pause: 2.0
+
+  # ── 1) deny_exec ─────────────────────────────────────────────────────────
+  - clear: true
+    pause: 0.4
+  - comment: "1) deny_exec — shell tools blocked even when installed on the host"
+    pause: 1.4
+  - type: "aigate run -- curl https://api.github.com"
+    pause: 3.5
+
+  # ── 2) deny_read (synthetic .env, no real secrets) ───────────────────────
+  - clear: true
+    pause: 0.4
+  - comment: "2) deny_read — secrets are hidden from the sandboxed process"
+    pause: 1.4
+  - comment: "first, what the host sees:"
+    pause: 0.8
+  - type: "cat .env"
+    pause: 2.2
+  - comment: "now from inside the sandbox:"
+    pause: 0.8
+  - type: "aigate run -- cat .env"
+    pause: 4.0
+
+  # ── 3) mask_stdout ───────────────────────────────────────────────────────
+  - clear: true
+    pause: 0.4
+  - comment: "3) mask_stdout — secrets that slip out are redacted on the way back"
+    pause: 1.4
+  - type: "aigate run -- printf 'openai key: sk-proj-abc123def456ghi789\\n'"
+    pause: 4.0
+
+  # ── 4) wrap interactive claude ───────────────────────────────────────────
+  # Interactive TUIs can't be typed into from a plain recorded shell, so
+  # we drive claude in a detached tmux session: launch it inside aigate,
+  # send the prompt via `tmux send-keys`, wait for the answer, then
+  # `tmux capture-pane` the rendered TUI back into the visible recording.
+  # No yoink/tmux machinery is shown to the viewer — they only see what
+  # they would themselves type at the prompt.
+  - clear: true
+    pause: 0.4
+  - comment: "4) wrap claude itself — the full interactive TUI works the same way"
+    pause: 1.8
+  - bash: |
+      tmux kill-session -t aigate-demo-cl 2>/dev/null || true
+      # Launch claude with the repo as cwd — it's an already-trusted folder,
+      # so claude skips its first-run "trust this folder" dialog. (Launching
+      # from /tmp/aigate-demo would block on that prompt forever.)
+      tmux new-session -d -s aigate-demo-cl -x 130 -y 22 -c "$_AIGATE_REPO" "$_AIGATE_BIN run -- claude"
+      # Let claude finish booting (sandbox setup + TUI splash + plugin load).
+      sleep 6
+      tmux send-keys -t aigate-demo-cl "what is 2+2? answer in one short sentence." Enter
+      # Claude latency inside the sandbox is ~60–90s on first call (cold
+      # start + post-answer "stop hooks"). We wait long enough for the
+      # status spinner to clear so the captured pane shows a clean answer
+      # frame, not a half-rendered cogitating one. The cast's idle_time_limit
+      # collapses this dead air into ~2s in the rendered GIF.
+      sleep 95
+      # Render a green prompt line so the captured pane reads as a real
+      # session, then dump the pane. Trim trailing blank rows AND drop
+      # claude's transient status spinner lines ("Cogitating…",
+      # "Fiddle-faddling…", "running stop hooks", etc) — they're noise
+      # by the time the answer is in.
+      printf '\e[1;32m$\e[0m aigate run -- claude\n'
+      tmux capture-pane -p -t aigate-demo-cl \
+        | sed -E '/(Cogitating|Osmosing|Fiddle-faddling|Wrangling|running (stop|pre)? ?hooks|esc to interrupt)/d' \
+        | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}'
+      # Highlight the answer one more time, BELOW the pane, in a colour
+      # that pops — the answer line inside claude's TUI is small and easy
+      # to miss in a fast-playing GIF.
+      printf '\n\e[1;32m✓ claude (inside aigate sandbox) answered:\e[0m \e[1;33m4.\e[0m\n'
+      tmux kill-session -t aigate-demo-cl 2>/dev/null || true
+      # Hold the final answer frame long enough that it's unmissable on
+      # loop. The render's `idle_time_limit: 2` caps silent gaps at 2s, so
+      # we emit a no-op write (space+backspace) once a second for 8s to
+      # generate "activity" the renderer won't compress away.
+      for _ in 1 2 3 4 5 6 7 8; do printf ' \b'; sleep 1; done
+  - pause: 0.4

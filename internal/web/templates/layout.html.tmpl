@@ -1,0 +1,160 @@
+{{define "layout"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AxeForge AiGate</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="ambient-grid" aria-hidden="true"></div>
+  <main class="shell" data-controller>
+    <header class="topbar">
+      <div class="brand-lockup" aria-label="AxeForge AiGate">
+        <span class="brand-mark">AF</span>
+        <div>
+          <p class="eyebrow">AxeForge security console</p>
+          <h1>AiGate command boundary</h1>
+        </div>
+      </div>
+      <div class="status-pill {{if .Initialized}}is-ready{{end}}">
+        <span></span>
+        {{if .Initialized}}initialized{{else}}not initialized{{end}}
+      </div>
+    </header>
+
+    <section class="hero-grid">
+      <article class="scoreboard">
+        <div class="score-main">
+          <p>blocked attempts</p>
+          <strong data-field="blocked-total">{{.Counters.BlockedTotal}}</strong>
+          <div class="scanline" aria-hidden="true"></div>
+        </div>
+        <div class="score-side">
+          <div>
+            <span>today</span>
+            <strong data-field="blocked-today">{{.Counters.BlockedToday}}</strong>
+          </div>
+          <div>
+            <span>runs observed</span>
+            <strong data-field="runs-total">{{.Counters.RunsTotal}}</strong>
+          </div>
+        </div>
+      </article>
+
+      <article class="last-block">
+        <div class="radar" aria-hidden="true"><span></span></div>
+        <p class="panel-label">last intercept</p>
+        <div data-field="latest-block">
+          {{if .LastBlocked}}
+          <strong>{{.LastBlocked.Rule}}</strong>
+          <span>{{.LastBlocked.Command}}</span>
+          <small>{{.LastBlocked.Detail}}</small>
+          {{else}}
+          <strong>quiet</strong>
+          <span>No blocked sandbox activity has been captured yet.</span>
+          <small>Run commands through aigate and this panel will fill in.</small>
+          {{end}}
+        </div>
+      </article>
+    </section>
+
+    <section class="dashboard-grid">
+      <article class="panel rule-panel">
+        <div class="panel-head">
+          <div>
+            <p class="panel-label">active policy</p>
+            <h2>Rules enforced by the operating system</h2>
+          </div>
+          <button type="button" data-action="refresh" aria-label="Refresh dashboard">Sync</button>
+        </div>
+        <div class="rule-counters">
+          <div><span>deny read</span><strong data-field="rule-read">{{len .Rules.DenyRead}}</strong></div>
+          <div><span>deny exec</span><strong data-field="rule-exec">{{len .Rules.DenyExec}}</strong></div>
+          <div><span>allow net</span><strong data-field="rule-net">{{len .Rules.AllowNet}}</strong></div>
+        </div>
+        <div class="rule-lists">
+          <div>
+            <h2>Protected reads</h2>
+            <ul data-list="deny-read">{{range .Rules.DenyRead}}<li>{{.}}</li>{{else}}<li class="muted">none</li>{{end}}</ul>
+          </div>
+          <div>
+            <h2>Blocked commands</h2>
+            <ul data-list="deny-exec">{{range .Rules.DenyExec}}<li>{{.}}</li>{{else}}<li class="muted">none</li>{{end}}</ul>
+          </div>
+          <div>
+            <h2>Allowed network</h2>
+            <ul data-list="allow-net">{{range .Rules.AllowNet}}<li>{{.}}</li>{{else}}<li class="muted">all outbound allowed</li>{{end}}</ul>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel breakdown-panel">
+        <p class="panel-label">block mix</p>
+        <h2>Where the sandbox is taking pressure</h2>
+        <div class="bars" data-field="bars"></div>
+        <p class="path-note">audit log: <span>{{.AuditPath}}</span></p>
+      </article>
+    </section>
+
+    <section class="panel events-panel">
+      <div class="panel-head">
+        <div>
+          <p class="panel-label">timeline</p>
+          <h2>Recent decisions</h2>
+        </div>
+        <span class="path-note">config: {{.ConfigPath}}</span>
+      </div>
+      <div class="filters" aria-label="Timeline filters">
+        <label class="search-box">
+          <span>Search command or detail</span>
+          <input type="search" data-filter="query" placeholder="curl, .env, kubectl, registry..." autocomplete="off">
+        </label>
+        <label>
+          <span>Event</span>
+          <select data-filter="kind">
+            <option value="">All events</option>
+            <option value="blocked">Blocked only</option>
+            <option value="run_started">Runs only</option>
+          </select>
+        </label>
+        <label>
+          <span>Rule</span>
+          <select data-filter="rule">
+            <option value="">Any rule</option>
+            <option value="deny_read">Deny read</option>
+            <option value="deny_exec">Deny exec</option>
+            <option value="allow_net">Network</option>
+          </select>
+        </label>
+        <label>
+          <span>Source</span>
+          <select data-filter="source">
+            <option value="">Any source</option>
+          </select>
+        </label>
+        <button type="button" data-action="clear-filters">Clear</button>
+        <output data-field="filter-count">0 shown</output>
+      </div>
+      <div class="event-list" data-list="events">
+        {{range .Events}}
+        <article class="event-row rule-{{.Rule}}">
+          <time>{{.Time.Format "Jan 02 15:04:05"}}</time>
+          <strong>{{.Kind}}</strong>
+          <span>{{.Rule}}</span>
+          <p>{{.Command}}</p>
+        </article>
+        {{else}}
+        <div class="empty-state">
+          <strong>No audit events yet.</strong>
+          <span>`aigate run -- ...` will start populating this view.</span>
+        </div>
+        {{end}}
+      </div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
+{{end}}
