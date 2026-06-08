@@ -345,6 +345,7 @@ func TestBuildNetFilterScript(t *testing.T) {
 		script := buildNetFilterScript(
 			[]string{"api.anthropic.com", "1.2.3.4"},
 			[]string{"8.8.8.8"},
+			nil, false,
 			profile, "echo", []string{"hello"},
 		)
 		// Hostnames should be resolved inside the namespace via getent ahostsv4
@@ -364,6 +365,7 @@ func TestBuildNetFilterScript(t *testing.T) {
 		script := buildNetFilterScript(
 			[]string{"example.com"},
 			[]string{"8.8.8.8", "1.1.1.1"},
+			nil, false,
 			profile, "echo", []string{"hello"},
 		)
 		if !strings.Contains(script, "iptables -A OUTPUT -p udp --dport 53 -j ACCEPT") {
@@ -380,22 +382,56 @@ func TestBuildNetFilterScript(t *testing.T) {
 		}
 	})
 
+	// Regression test for issue #8: callers feed only IPv4 nameservers to this
+	// function. If something ever regresses and a v6 address ends up here, the
+	// generated `iptables -A OUTPUT -d <v6>` would fail at runtime with
+	// "host/network not found" — and there's no test catching it.
+	t.Run("does not emit iptables rules for IPv6 nameservers if any slip through", func(t *testing.T) {
+		// Pass v4 + v6 mixed; v6 entries should not produce iptables rules at all
+		// in any sane implementation (current code defers filtering to the caller,
+		// so this test documents the contract).
+		script := buildNetFilterScript(
+			nil,
+			[]string{"192.168.178.1"}, // post-splitDNSByFamily list
+			nil, false,
+			profile, "echo", nil,
+		)
+		// Sanity: v4 rule present.
+		if !strings.Contains(script, "iptables -A OUTPUT -d 192.168.178.1 -j ACCEPT") {
+			t.Error("script should accept v4 nameserver 192.168.178.1")
+		}
+		// Negative: no v6 literal in the script (the colon is the giveaway).
+		// Find "-d <addr>" patterns and ensure addr is not v6.
+		for _, line := range strings.Split(script, "\n") {
+			if !strings.Contains(line, "iptables -A OUTPUT -d ") {
+				continue
+			}
+			// Extract the token after "-d ".
+			idx := strings.Index(line, "-d ")
+			rest := line[idx+3:]
+			tok := strings.Fields(rest)
+			if len(tok) > 0 && strings.Contains(tok[0], ":") {
+				t.Errorf("iptables rule references IPv6 address %q: %s", tok[0], line)
+			}
+		}
+	})
+
 	t.Run("contains resolv.conf fix", func(t *testing.T) {
-		script := buildNetFilterScript(nil, nil, profile, "echo", nil)
+		script := buildNetFilterScript(nil, nil, nil, false, profile, "echo", nil)
 		if !strings.Contains(script, "nameserver 10.0.2.3") {
 			t.Error("script should set resolv.conf to slirp4netns DNS")
 		}
 	})
 
 	t.Run("contains wait for tap0", func(t *testing.T) {
-		script := buildNetFilterScript(nil, nil, profile, "echo", nil)
+		script := buildNetFilterScript(nil, nil, nil, false, profile, "echo", nil)
 		if !strings.Contains(script, "ip addr show tap0") {
 			t.Error("script should wait for tap0 interface")
 		}
 	})
 
 	t.Run("waits for real DNS before resolving hosts", func(t *testing.T) {
-		script := buildNetFilterScript([]string{"example.com", "other.com"}, nil, profile, "echo", nil)
+		script := buildNetFilterScript([]string{"example.com", "other.com"}, nil, nil, false, profile, "echo", nil)
 		// DNS readiness check should use the FIRST AllowNet host, not localhost
 		dnsWaitIdx := strings.Index(script, "getent ahostsv4 \"example.com\" >/dev/null")
 		if dnsWaitIdx == -1 {
@@ -407,16 +443,63 @@ func TestBuildNetFilterScript(t *testing.T) {
 	})
 
 	t.Run("retries host resolution on failure", func(t *testing.T) {
-		script := buildNetFilterScript([]string{"example.com"}, nil, profile, "echo", nil)
+		script := buildNetFilterScript([]string{"example.com"}, nil, nil, false, profile, "echo", nil)
 		if !strings.Contains(script, "_attempt in 1 2 3") {
 			t.Error("should retry getent resolution")
 		}
 	})
 
 	t.Run("contains target command", func(t *testing.T) {
-		script := buildNetFilterScript(nil, nil, profile, "mycommand", []string{"--flag", "value"})
+		script := buildNetFilterScript(nil, nil, nil, false, profile, "mycommand", []string{"--flag", "value"})
 		if !strings.Contains(script, "exec mycommand --flag value") {
 			t.Errorf("script should contain exec of target command, got:\n%s", script)
+		}
+	})
+
+	// IPv6 path: when ipv6Enabled=true, the script must also emit ip6tables
+	// rules, a v6 DNS forwarder, and AAAA resolution for allow_net hosts.
+	t.Run("emits ip6tables rules when ipv6Enabled", func(t *testing.T) {
+		script := buildNetFilterScript(
+			[]string{"example.com"},
+			[]string{"192.168.178.1"},
+			[]string{"2001:4860:4860::8888"},
+			true,
+			profile, "echo", nil,
+		)
+		for _, want := range []string{
+			"ip6tables -A OUTPUT -o lo -j ACCEPT",
+			"ip6tables -A OUTPUT -p udp --dport 53 -j ACCEPT",
+			"ip6tables -A OUTPUT -p tcp --dport 53 -j ACCEPT",
+			"ip6tables -A OUTPUT -d 2001:4860:4860::8888 -j ACCEPT",
+			"getent ahostsv6 \"example.com\"",
+			"ip6tables -A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited",
+			"nameserver fd00::3",
+		} {
+			if !strings.Contains(script, want) {
+				t.Errorf("script should contain %q, got:\n%s", want, script)
+			}
+		}
+		// v4 rules must still be present.
+		if !strings.Contains(script, "iptables -A OUTPUT -d 192.168.178.1 -j ACCEPT") {
+			t.Error("v4 rules must still be emitted when ipv6Enabled=true")
+		}
+	})
+
+	t.Run("omits ip6tables and fd00::3 when ipv6Enabled=false", func(t *testing.T) {
+		script := buildNetFilterScript(
+			[]string{"example.com"},
+			[]string{"192.168.178.1"},
+			nil, false,
+			profile, "echo", nil,
+		)
+		if strings.Contains(script, "ip6tables") {
+			t.Errorf("script must not contain ip6tables when ipv6Enabled=false, got:\n%s", script)
+		}
+		if strings.Contains(script, "fd00::3") {
+			t.Errorf("script must not include v6 forwarder when ipv6Enabled=false")
+		}
+		if strings.Contains(script, "getent ahostsv6") {
+			t.Errorf("script must not resolve AAAA when ipv6Enabled=false")
 		}
 	})
 }
@@ -453,7 +536,7 @@ func TestBuildOrchestrationScript(t *testing.T) {
 	inner := "echo hello world\n"
 
 	t.Run("embeds inner script via base64", func(t *testing.T) {
-		script := buildOrchestrationScript(inner)
+		script := buildOrchestrationScript(inner, false)
 		encoded := base64.StdEncoding.EncodeToString([]byte(inner))
 		if !strings.Contains(script, encoded) {
 			t.Error("orchestration script should contain base64-encoded inner script")
@@ -461,7 +544,7 @@ func TestBuildOrchestrationScript(t *testing.T) {
 	})
 
 	t.Run("preserves stdin via fd 3", func(t *testing.T) {
-		script := buildOrchestrationScript(inner)
+		script := buildOrchestrationScript(inner, false)
 		if !strings.Contains(script, "exec 3<&0") {
 			t.Error("should save stdin to fd 3")
 		}
@@ -471,7 +554,7 @@ func TestBuildOrchestrationScript(t *testing.T) {
 	})
 
 	t.Run("uses two-layer unshare", func(t *testing.T) {
-		script := buildOrchestrationScript(inner)
+		script := buildOrchestrationScript(inner, false)
 		// Inner unshare should create net namespace (outer only creates user ns)
 		if !strings.Contains(script, "unshare --net --mount --pid --fork") {
 			t.Error("inner unshare should create net/mount/pid namespaces")
@@ -479,14 +562,24 @@ func TestBuildOrchestrationScript(t *testing.T) {
 	})
 
 	t.Run("runs slirp4netns inside user namespace", func(t *testing.T) {
-		script := buildOrchestrationScript(inner)
+		script := buildOrchestrationScript(inner, false)
 		if !strings.Contains(script, "slirp4netns --configure $_SANDBOX_PID tap0") {
 			t.Error("should launch slirp4netns with sandbox PID")
+		}
+		if strings.Contains(script, "--enable-ipv6") {
+			t.Error("ipv6Enabled=false should not enable v6 on slirp4netns")
+		}
+	})
+
+	t.Run("passes --enable-ipv6 to slirp4netns when ipv6Enabled=true", func(t *testing.T) {
+		script := buildOrchestrationScript(inner, true)
+		if !strings.Contains(script, "slirp4netns --enable-ipv6 --configure $_SANDBOX_PID tap0") {
+			t.Errorf("ipv6Enabled=true should pass --enable-ipv6 to slirp4netns, got:\n%s", script)
 		}
 	})
 
 	t.Run("waits for namespace and cleans up", func(t *testing.T) {
-		script := buildOrchestrationScript(inner)
+		script := buildOrchestrationScript(inner, false)
 		if !strings.Contains(script, "readlink /proc/$_SANDBOX_PID/ns/net") {
 			t.Error("should wait for net namespace to differ from host")
 		}
@@ -510,6 +603,62 @@ func TestGetSystemDNS(t *testing.T) {
 			t.Errorf("getSystemDNS() should not return localhost address %q", s)
 		}
 	}
+}
+
+func TestSplitDNSByFamily(t *testing.T) {
+	t.Run("all v4", func(t *testing.T) {
+		v4, v6 := splitDNSByFamily([]string{"8.8.8.8", "1.1.1.1"})
+		if len(v4) != 2 || v4[0] != "8.8.8.8" || v4[1] != "1.1.1.1" {
+			t.Errorf("v4 = %v, want [8.8.8.8 1.1.1.1]", v4)
+		}
+		if len(v6) != 0 {
+			t.Errorf("v6 = %v, want []", v6)
+		}
+	})
+
+	t.Run("all v6", func(t *testing.T) {
+		v4, v6 := splitDNSByFamily([]string{"2001:4860:4860::8888", "fd2e:2bd1:b699::1"})
+		if len(v4) != 0 {
+			t.Errorf("v4 = %v, want []", v4)
+		}
+		if len(v6) != 2 {
+			t.Errorf("v6 = %v, want 2 entries", v6)
+		}
+	})
+
+	// Reproduces the resolv.conf shape from issue #8 (Fedora 43 with both v4 and
+	// v6 nameservers populated by NetworkManager). v6 entries previously leaked
+	// into iptables and caused "host/network not found" errors.
+	t.Run("mixed v4 and v6 from issue #8", func(t *testing.T) {
+		v4, v6 := splitDNSByFamily([]string{
+			"192.168.178.1",
+			"fd2e:2bd1:b699:0:4a5d:35ff:fe1c:74fd",
+			"2003:c2:3f1c:8100:4a5d:35ff:fe1c:74fd",
+		})
+		if len(v4) != 1 || v4[0] != "192.168.178.1" {
+			t.Errorf("v4 = %v, want [192.168.178.1]", v4)
+		}
+		if len(v6) != 2 {
+			t.Errorf("v6 = %v, want 2 entries", v6)
+		}
+	})
+
+	t.Run("drops unparseable entries", func(t *testing.T) {
+		v4, v6 := splitDNSByFamily([]string{"not-an-ip", "8.8.8.8"})
+		if len(v4) != 1 || v4[0] != "8.8.8.8" {
+			t.Errorf("v4 = %v, want [8.8.8.8]", v4)
+		}
+		if len(v6) != 0 {
+			t.Errorf("v6 = %v, want []", v6)
+		}
+	})
+
+	t.Run("empty input", func(t *testing.T) {
+		v4, v6 := splitDNSByFamily(nil)
+		if v4 != nil || v6 != nil {
+			t.Errorf("expected nil/nil for empty input, got v4=%v v6=%v", v4, v6)
+		}
+	})
 }
 
 func TestParseDNSFromFile(t *testing.T) {
@@ -712,7 +861,7 @@ func TestBuildNetFilterScript_MountMakeRprivate(t *testing.T) {
 		Config:  domain.Config{},
 		WorkDir: "/tmp",
 	}
-	script := buildNetFilterScript(nil, nil, profile, "echo", nil)
+	script := buildNetFilterScript(nil, nil, nil, false, profile, "echo", nil)
 	if !strings.Contains(script, "mount --make-rprivate /") {
 		t.Error("net filter script should start with mount --make-rprivate /")
 	}
@@ -841,7 +990,7 @@ func TestBuildNetFilterScript_IncludesExecDeny(t *testing.T) {
 		WorkDir: "/tmp",
 	}
 
-	script := buildNetFilterScript(nil, nil, profile, "echo", []string{"hello"})
+	script := buildNetFilterScript(nil, nil, nil, false, profile, "echo", []string{"hello"})
 	if !strings.Contains(script, "/tmp/.aigate-deny-exec") {
 		t.Error("net filter script should include exec deny overrides")
 	}

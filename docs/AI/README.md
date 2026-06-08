@@ -44,7 +44,8 @@ integration/     End-to-end CLI tests
 - **Platform interface**: Linux and macOS use completely different OS mechanisms. The `Platform` interface abstracts this with `newPlatform()` factory via build tags.
 - **Executor interface**: All `exec.Command` calls go through `Executor`, enabling unit tests without root. Exception: `runWithBwrapNetFilter` uses `exec.Command` directly because it needs `cmd.Start()` + `ExtraFiles` for the info-fd pipe, which the Executor interface does not expose.
 - **bwrap-first on Linux**: `RunSandboxed` prefers bwrap when available; falls back to `unshare`-based shell scripts. bwrap uses declarative bind mounts (no shell injection risk), resolves symlinks for bind destinations, and handles capabilities via `--uid 0 --cap-add` for the network path.
-- **No CGO**: All platform operations use `exec.Command` to call system utilities (setfacl, groupadd, dscl, chmod, bwrap, slirp4netns).
+- **No CGO**: All platform operations use `exec.Command` to call system utilities (setfacl, groupadd, dscl, chmod, bwrap, slirp4netns, iptables/ip6tables).
+- **IPv6 sandbox is opt-in by capability detection**: `ipv6SandboxSupported()` requires both kernel v6 enabled and `ip6tables` on PATH. Either missing → sandbox runs IPv4-only. Partial v6 (NAT but no filter) is refused — it would silently bypass `allow_net`.
 - **Config merging**: Global config (`~/.aigate/config.yaml`) + project config (`.aigate.yaml`) merge with project extending global.
 
 ## Testing

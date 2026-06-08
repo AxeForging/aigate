@@ -8,7 +8,7 @@ aigate creates an OS-level sandbox for AI coding agents. When you use Claude Cod
 - **Execute** dangerous commands (curl, wget, ssh)
 - **Access** unauthorized network endpoints
 
-Unlike application-level restrictions that can be bypassed, aigate uses kernel-enforced isolation (Linux namespaces + iptables, macOS sandbox-exec). The AI tool physically cannot access what you deny.
+Unlike application-level restrictions that can be bypassed, aigate uses kernel-enforced isolation (Linux namespaces + iptables/ip6tables, macOS sandbox-exec). The AI tool physically cannot access what you deny.
 
 ## Prerequisites
 
@@ -16,6 +16,7 @@ Unlike application-level restrictions that can be bypassed, aigate uses kernel-e
 |---|---|---|
 | **Recommended** | `bwrap` (Bubblewrap) | None (uses built-in sandbox-exec) |
 | **For network filtering** | `slirp4netns` | None (uses built-in Seatbelt) |
+| **For IPv6 filtering** | `ip6tables` (optional — sandbox is v4-only without it) | None |
 | **For persistent ACLs** | `setfacl` (usually pre-installed) | None |
 
 ### Install Bubblewrap (recommended, Linux)
@@ -49,6 +50,8 @@ sudo pacman -S slirp4netns
 ```
 
 If `slirp4netns` is not installed, aigate logs a warning and runs without network filtering.
+
+IPv6 egress is filtered when `ip6tables` is installed (usually shipped with the `iptables` package) and the kernel has IPv6 enabled. Otherwise the sandbox runs IPv4-only and IPv6 traffic is unreachable from inside.
 
 ### Verify your setup
 
@@ -182,6 +185,7 @@ Example output:
 ```
   ok    bwrap            v0.10.0  — sandbox isolation (mount/pid/user namespaces)
   ok    slirp4netns      v1.3.1   — network filtering (allow_net rules)
+  ok    ip6tables                 — IPv6 egress filtering (optional)
   ok    setfacl          v2.3.2   — persistent ACLs
   ok    user namespaces  enabled
 
@@ -339,8 +343,8 @@ Two layers working together for defense-in-depth:
 
 Restricts outbound connections to domains listed in `allow_net`:
 
-- **Linux (bwrap path)**: bwrap creates a network namespace via `--unshare-net`. Go reads bwrap's `--info-fd` to get the child PID, then launches `slirp4netns --configure` from host-side to attach user-mode networking. Inside the sandbox, `iptables` OUTPUT rules resolve each `allow_net` hostname and restrict egress. No root needed.
-- **Linux (unshare fallback)**: Two-layer `unshare` — outer creates user namespace, inner creates network namespace. `slirp4netns` runs inside the user namespace. Same `iptables` filtering.
+- **Linux (bwrap path)**: bwrap creates a network namespace via `--unshare-net`. Go reads bwrap's `--info-fd` to get the child PID, then launches `slirp4netns --configure` from host-side to attach user-mode networking. Inside the sandbox, `iptables` OUTPUT rules resolve each `allow_net` hostname and restrict egress. When `ip6tables` is available and the kernel has IPv6 enabled, slirp4netns is launched with `--enable-ipv6` and a parallel `ip6tables` filter is installed. No root needed.
+- **Linux (unshare fallback)**: Two-layer `unshare` — outer creates user namespace, inner creates network namespace. `slirp4netns` runs inside the user namespace. Same `iptables`/`ip6tables` filtering.
 - **macOS**: `sandbox-exec` Seatbelt profiles with `(deny network-outbound)` and per-host `(allow network-outbound (remote ip ...))` rules. Kernel-enforced via Sandbox.kext.
 
 **Linux**:
