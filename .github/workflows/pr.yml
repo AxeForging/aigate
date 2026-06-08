@@ -53,7 +53,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Advisory AI review — never block a PR on it (e.g. expired AI_API_KEY).
       - uses: AxeForging/reviewforge@main
+        continue-on-error: true
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AI_PROVIDER: gemini
