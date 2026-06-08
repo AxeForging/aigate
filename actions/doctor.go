@@ -2,6 +2,7 @@ package actions
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -40,6 +41,10 @@ func runLinuxChecks() {
 	slirpOK := printCheck("slirp4netns",
 		"network filtering — required for allow_net rules",
 		"sudo dnf install slirp4netns   OR   sudo apt install slirp4netns")
+
+	printCheck("ip6tables",
+		"IPv6 egress filtering — optional; when missing, sandbox runs IPv4-only",
+		"sudo dnf install iptables   OR   sudo apt install iptables")
 
 	printCheck("setfacl",
 		"persistent ACLs — deny_read enforced on disk between sessions",
@@ -91,6 +96,21 @@ func toolVersion(name string) string {
 	return ""
 }
 
+// ip6tablesAvailable mirrors the runtime check used by the sandbox: kernel v6
+// must be enabled AND ip6tables must be on PATH. Either missing → v4-only.
+func ip6tablesAvailable() bool {
+	if _, err := exec.LookPath("ip6tables"); err != nil {
+		return false
+	}
+	// Match the services-layer check; if v6 is disabled at the kernel, ip6tables
+	// in the namespace will fail and we'd be running unfiltered v6 — refuse it.
+	data, err := os.ReadFile("/proc/sys/net/ipv6/conf/all/disable_ipv6")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(data)) == "0"
+}
+
 // checkUserNamespaces verifies that unprivileged user namespaces are enabled.
 func checkUserNamespaces() bool {
 	// Attempt a trivial unshare; if it fails the kernel has them disabled.
@@ -119,6 +139,11 @@ func printLinuxIsolationMode(bwrap, slirp, unshare bool) {
 		fmt.Println("  deny_exec   bwrap bind mounts           kernel-enforced, per-run")
 		fmt.Println("  allow_net   bwrap --unshare-net         network namespace via bwrap")
 		fmt.Println("              slirp4netns + iptables      egress filtered to allowed hosts")
+		if ip6tablesAvailable() {
+			fmt.Println("              + ip6tables                 IPv6 egress filtered in parallel")
+		} else {
+			fmt.Println("              IPv4-only                   install ip6tables to enable v6 filtering")
+		}
 		fmt.Println("  config dir  bwrap tmpfs overlay         ~/.aigate hidden from agent")
 	case bwrap && !slirp:
 		fmt.Println("  bwrap  (no network filtering — slirp4netns missing)")

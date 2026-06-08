@@ -27,6 +27,19 @@ func hasBwrap() bool {
 	return err == nil
 }
 
+// slirpArgs builds the slirp4netns CLI args for a given sandbox child PID.
+// When ipv6Enabled is true, --enable-ipv6 is prepended so the inner namespace
+// gets a v6 NAT path (forwarder at fd00::3, sandbox addr in fd00::/64).
+// ipv6Enabled must only be true on hosts that also have ip6tables — otherwise
+// the sandbox has v6 connectivity with no filter, which is worse than no v6.
+func slirpArgs(childPID int, ipv6Enabled bool) []string {
+	args := []string{"--configure", strconv.Itoa(childPID), "tap0"}
+	if ipv6Enabled {
+		args = append([]string{"--enable-ipv6"}, args...)
+	}
+	return args
+}
+
 // runWithBwrap runs a command in a Bubblewrap sandbox.
 //
 // bwrap replaces the shell-script-based unshare approach:
@@ -214,10 +227,19 @@ func writeTmpFile(pattern, content string) (string, error) {
 // fails with EPERM on systems where network-namespace creation requires
 // CAP_SYS_ADMIN in the initial user namespace.
 func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd string, args []string, stdout, stderr io.Writer) error {
-	dnsServers := getSystemDNS()
+	dnsV4, dnsV6 := splitDNSByFamily(getSystemDNS())
+	ipv6Enabled := ipv6SandboxSupported()
+	if !ipv6Enabled {
+		// Don't surface v6 nameservers in the script when we can't filter them.
+		// (See the package-level comment on ipv6SandboxSupported: partial v6 is
+		// worse than none, so we drop v6 entirely on hosts without ip6tables.)
+		dnsV6 = nil
+	}
 	helpers.Log.Info().
 		Strs("allow_net", profile.Config.AllowNet).
-		Strs("dns_servers", dnsServers).
+		Strs("dns_servers_v4", dnsV4).
+		Strs("dns_servers_v6", dnsV6).
+		Bool("ipv6", ipv6Enabled).
 		Msg("starting bwrap network-filtered sandbox")
 
 	var tmpFiles []string
@@ -240,7 +262,7 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 	}
 	defer infoR.Close() //nolint:errcheck
 
-	bwrapArgs = appendBwrapNetArgs(bwrapArgs, profile.Config.AllowNet, dnsServers, cmd, args)
+	bwrapArgs = appendBwrapNetArgs(bwrapArgs, profile.Config.AllowNet, dnsV4, dnsV6, ipv6Enabled, cmd, args)
 
 	bwrapCmd := exec.Command("bwrap", bwrapArgs...)
 	bwrapCmd.ExtraFiles = []*os.File{infoW} // fd 3 in child
@@ -282,7 +304,7 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 
 	// Launch slirp4netns from the host side targeting the child's net namespace.
 	// Suppress stdout (verbose protocol debug), keep stderr for real errors.
-	slirpCmd := exec.Command("slirp4netns", "--configure", strconv.Itoa(childPID), "tap0")
+	slirpCmd := exec.Command("slirp4netns", slirpArgs(childPID, ipv6Enabled)...)
 	slirpCmd.Stdout = nil
 	slirpCmd.Stderr = os.Stderr
 	if slirpErr := slirpCmd.Start(); slirpErr != nil {
@@ -337,7 +359,7 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 // resolv.conf (CAP_SYS_ADMIN), so we set UID 0 and add the two caps.
 // bwrap drops all capabilities by default even inside the user namespace;
 // without --uid 0, the process is UID 1000 and nf_tables rejects it.
-func appendBwrapNetArgs(args []string, allowNet, dnsServers []string, cmd string, cmdArgs []string) []string {
+func appendBwrapNetArgs(args []string, allowNet, dnsV4, dnsV6 []string, ipv6Enabled bool, cmd string, cmdArgs []string) []string {
 	// Set UID/GID to 0 inside the sandbox: nf_tables requires being root (UID 0)
 	// in the user namespace, not just having CAP_NET_ADMIN.
 	args = append(args, "--uid", "0", "--gid", "0")
@@ -347,7 +369,7 @@ func appendBwrapNetArgs(args []string, allowNet, dnsServers []string, cmd string
 	// bwrap creates the network namespace natively; info-fd 3 (ExtraFiles[0])
 	// carries the child PID so the parent can launch slirp4netns.
 	args = append(args, "--unshare-net", "--info-fd", "3")
-	innerScript := buildNetOnlyScript(allowNet, dnsServers, cmd, cmdArgs)
+	innerScript := buildNetOnlyScript(allowNet, dnsV4, dnsV6, ipv6Enabled, cmd, cmdArgs)
 	args = append(args, "--", "sh", "-c", innerScript)
 	return args
 }
@@ -395,35 +417,20 @@ func readBwrapInfoPID(r io.Reader) (int, error) {
 // sandbox. bwrap has already applied isolation (user ns, mount ns, deny_read,
 // deny_exec, config dir hide, /proc via --proc). This script handles only the
 // network-specific setup: waiting for tap0, pointing resolv.conf at the
-// slirp4netns DNS forwarder, configuring iptables, then exec'ing the command.
-func buildNetOnlyScript(allowNetHosts, dnsServers []string, cmd string, args []string) string {
+// slirp4netns DNS forwarder(s), configuring iptables (+ ip6tables when v6
+// enabled), then exec'ing the command.
+func buildNetOnlyScript(allowNetHosts, dnsServersV4, dnsServersV6 []string, ipv6Enabled bool, cmd string, args []string) string {
 	var sb strings.Builder
 
 	// Ensure mount propagation is private (bwrap sets this, but be defensive).
 	sb.WriteString("mount --make-rprivate / 2>/dev/null || true\n")
 
-	// Wait for tap0 (slirp4netns creates it after reading our PID from info-fd).
-	sb.WriteString("for i in $(seq 1 100); do ip addr show tap0 2>/dev/null | grep -q inet && break; sleep 0.05; done\n")
-
-	// Point resolv.conf at slirp4netns DNS forwarder.
-	sb.WriteString("echo 'nameserver 10.0.2.3' > /tmp/.aigate-resolv\n")
-	sb.WriteString("mount --bind /tmp/.aigate-resolv /etc/resolv.conf 2>/dev/null || ")
-	sb.WriteString("mount --bind /tmp/.aigate-resolv $(readlink -f /etc/resolv.conf) 2>/dev/null || true\n")
-
-	// iptables: loopback + DNS first, then allow_net hosts, then REJECT all.
-	sb.WriteString("iptables -A OUTPUT -o lo -j ACCEPT\n")
-	sb.WriteString("iptables -A OUTPUT -p udp --dport 53 -j ACCEPT\n")
-	sb.WriteString("iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT\n")
-	for _, dns := range dnsServers {
-		fmt.Fprintf(&sb, "iptables -A OUTPUT -d %s -j ACCEPT\n", dns)
+	writeWaitForTap0(&sb)
+	writeResolvConf(&sb, ipv6Enabled)
+	writeIPv4Rules(&sb, allowNetHosts, dnsServersV4)
+	if ipv6Enabled {
+		writeIPv6Rules(&sb, allowNetHosts, dnsServersV6)
 	}
-	if len(allowNetHosts) > 0 {
-		fmt.Fprintf(&sb, "for i in $(seq 1 50); do getent ahostsv4 %q >/dev/null 2>&1 && break; sleep 0.1; done\n", allowNetHosts[0])
-	}
-	for _, host := range allowNetHosts {
-		fmt.Fprintf(&sb, "for _attempt in 1 2 3; do _ips=$(getent ahostsv4 %q 2>/dev/null | awk '{print $1}' | sort -u); [ -n \"$_ips\" ] && break; sleep 0.5; done; for _ip in $_ips; do iptables -A OUTPUT -d \"$_ip\" -j ACCEPT; done\n", host)
-	}
-	sb.WriteString("iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited\n")
 
 	sb.WriteString("exec ")
 	sb.WriteString(shellEscape(cmd, args))
