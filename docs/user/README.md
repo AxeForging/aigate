@@ -81,7 +81,7 @@ curl -L https://github.com/AxeForging/aigate/releases/latest/download/aigate-dar
 sudo mv aigate-darwin-arm64 /usr/local/bin/aigate
 ```
 
-### From Source (Go 1.24+)
+### From Source (Go 1.25+)
 ```sh
 go install github.com/AxeForging/aigate@latest
 ```
@@ -192,6 +192,17 @@ Example output:
 Isolation mode: bwrap + slirp4netns (full isolation)
 ```
 
+### serve
+
+Run a local web dashboard over the audit log. Read-only, binds to loopback by default — nothing is exposed off-host.
+
+```sh
+aigate serve                          # http://127.0.0.1:8080
+aigate serve --addr 127.0.0.1:9000    # custom address (or AIGATE_ADDR env var)
+```
+
+The dashboard shows live counters and a timeline of `run_started` and `blocked` events drawn from `~/.aigate/audit.jsonl` (see [Audit log](#audit-log)).
+
 ### reset
 
 Remove everything (group, user, config):
@@ -217,27 +228,49 @@ deny_read:
   - "~/.ssh/"
   - "*.pem"
   - "*.key"
+  - "*.p12"
   - "~/.aws/"
   - "~/.gcloud/"
   - "~/.kube/config"
   - "~/.npmrc"
   - "~/.pypirc"
+  - "terraform.tfstate"
+  - "*.tfvars"
 deny_exec:
   - "curl"
   - "wget"
   - "nc"
+  - "ncat"
+  - "netcat"
   - "ssh"
   - "scp"
+  - "rsync"
+  - "ftp"
   - "kubectl delete"
   - "kubectl exec"
 allow_net:
   - "api.anthropic.com"
   - "api.openai.com"
   - "api.github.com"
+  - "registry.npmjs.org"
+  - "proxy.golang.org"
 resource_limits:
   max_memory: "4G"
   max_cpu_percent: 80
   max_pids: 1000
+mask_stdout:
+  presets:
+    - openai
+    - anthropic
+    - aws_key
+    - aws_secret
+    - github
+    - bearer
+  patterns:
+    # Generic key=value / key: value assignments for common secret names
+    - regex: "(?:api_?key|secret|password|passwd|token|credential)\\s*[=:]\\s*\\S+"
+      show_prefix: 0
+      case_insensitive: true
 ```
 
 ### Output Masking (mask_stdout)
@@ -251,6 +284,7 @@ resource_limits:
 | `openai` | `sk-...` / `sk-proj-...` | `sk-***` |
 | `anthropic` | `sk-ant-...` | `sk-ant-***` |
 | `aws_key` | `AKIA...` (access key ID) | `AKIA***` |
+| `aws_secret` | `AWS_SECRET_ACCESS_KEY=...` assignment | `AWS_SECRET_ACCESS_KEY=***` |
 | `github` | `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_` | `ghp_***` |
 | `bearer` | `Bearer <token>` in headers/logs | `Bearer ***` |
 
@@ -379,6 +413,20 @@ Without `bwrap`, aigate falls back to `unshare --user --map-root-user` + shell s
 ### Resource limits *(coming soon)*
 
 Resource limits (`max_memory`, `max_cpu_percent`, `max_pids`) are defined in the config but **not yet enforced**. Enforcement via cgroups v2 controllers is planned for a future release.
+
+## Audit log
+
+Each sandboxed run appends a line to `~/.aigate/audit.jsonl` (JSON Lines). Two kinds of events are recorded:
+
+- `run_started` — a sandbox launched, with the command and a count of active `deny_read` / `deny_exec` / `allow_net` / masking rules
+- `blocked` — a command was refused by the `deny_exec` preflight check, with the matched rule
+
+```json
+{"time":"2026-06-08T17:00:00Z","kind":"run_started","command":"claude","work_dir":"/home/me/proj","counts":{"deny_read":15,"deny_exec":11,"allow_net":5,"masking":7}}
+{"time":"2026-06-08T17:01:12Z","kind":"blocked","rule":"curl","command":"curl ifconfig.me","source":"preflight"}
+```
+
+The file is plain text — `tail -f ~/.aigate/audit.jsonl` works, or run [`aigate serve`](#serve) for a live dashboard.
 
 ## Troubleshooting
 

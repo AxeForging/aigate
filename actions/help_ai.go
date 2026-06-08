@@ -24,6 +24,7 @@ SETUP (one-time)
   sudo aigate setup              # Create OS group "ai-agents" and user "ai-runner"
   aigate init                    # Create default config at ~/.aigate/config.yaml
   aigate init --force            # Re-create config (overwrites existing)
+  aigate doctor                  # Check prerequisites and active isolation mode
 
 FILE RESTRICTIONS (deny read)
   aigate deny read .env                    # Block a single file
@@ -52,6 +53,14 @@ RUNNING SANDBOXED
 
 CHECKING STATUS
   aigate status                            # Show all rules, group/user, limits
+
+DASHBOARD & AUDIT LOG
+  Every run and blocked command is appended to ~/.aigate/audit.jsonl (JSON Lines).
+  Events: run_started (rule counts) and blocked (matched deny_exec rule).
+
+  tail -f ~/.aigate/audit.jsonl            # Follow events as plain text
+  aigate serve                             # Local web dashboard → http://127.0.0.1:8080
+  aigate serve --addr 127.0.0.1:9000       # Custom address (or AIGATE_ADDR env var)
 
 CONFIGURATION
   Global config:   ~/.aigate/config.yaml
@@ -90,6 +99,7 @@ CONFIGURATION
         - openai
         - anthropic
         - aws_key
+        - aws_secret
         - github
         - bearer
 
@@ -116,13 +126,14 @@ OUTPUT MASKING (mask_stdout)
   addition to kernel-level sandbox protections (defense-in-depth).
 
   Built-in presets:
-    openai     sk-... / sk-proj-...           → sk-***
-    anthropic  sk-ant-...                     → sk-ant-***
-    aws_key    AKIA... (access key ID)        → AKIA***
-    github     ghp_, gho_, ghu_, ghs_, ghr_  → ghp_***
-    bearer     Bearer <token>                 → Bearer ***
+    openai      sk-... / sk-proj-...           → sk-***
+    anthropic   sk-ant-...                     → sk-ant-***
+    aws_key     AKIA... (access key ID)        → AKIA***
+    aws_secret  AWS_SECRET_ACCESS_KEY=...      → AWS_SECRET_ACCESS_KEY=***
+    github      ghp_, gho_, ghu_, ghs_, ghr_  → ghp_***
+    bearer      Bearer <token>                 → Bearer ***
 
-  All 5 presets are enabled by default (aigate init).
+  All 6 presets are enabled by default (aigate init).
 
   Pattern options:
     regex            RE2-compatible regular expression (required)
@@ -146,7 +157,7 @@ WHAT THE AI AGENT SEES INSIDE THE SANDBOX
     [aigate] deny_read: .env, secrets/, *.pem
     [aigate] deny_exec: curl, wget, ssh
     [aigate] allow_net: api.anthropic.com (all other outbound connections will be blocked)
-    [aigate] mask_stdout: openai, anthropic, aws_key, github, bearer
+    [aigate] mask_stdout: openai, anthropic, aws_key, aws_secret, github, bearer
 
   Denied files contain a marker instead of their content:
     [aigate] access denied: this file is protected by sandbox policy. See /tmp/.aigate-policy for all active restrictions.
