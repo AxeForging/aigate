@@ -11,43 +11,13 @@ permissions:
   pull-requests: write
 
 jobs:
-  title:
+  pr-title:
     runs-on: ubuntu-latest
     steps:
-      - name: Validate PR title follows Conventional Commits
-        env:
-          TITLE: ${{ github.event.pull_request.title }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if echo "$TITLE" | grep -qE "^(feat|fix|docs|style|refactor|test|chore|build|ci|perf|revert)(\(.+\))?(!)?: .+"; then
-            echo "PR title is valid: $TITLE"
-            exit 0
-          fi
-
-          BODY=$(cat <<'COMMENT'
-          ### ⚠️ Invalid PR Title
-
-          PR title must follow the **Conventional Commits** format since we use squash merge:
-
-          ```
-          <type>[optional scope][!]: <description>
-          ```
-
-          **Allowed types:** `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `build`, `ci`, `perf`, `revert`
-
-          **Examples:**
-          - `feat: add new feature`
-          - `fix(sandbox): resolve namespace issue`
-          - `feat!: breaking change`
-          - `chore(deps): update dependencies`
-          COMMENT
-          )
-
-          gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
-            -X POST -f body="$BODY"
-
-          echo "::error::PR title must follow Conventional Commits format"
-          exit 1
+      - uses: AxeForging/reusable-workflows/actions/pr-title-lint@291855e85ec985d1d318df82b8f9dce969b76933
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pr-title: ${{ github.event.pull_request.title }}
 
   review:
     runs-on: ubuntu-latest
@@ -65,12 +35,47 @@ jobs:
           INCREMENTAL: false
           REVIEW_RULES: concise
 
-  validate:
+  gauntlet:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: AxeForging/structlint@main
         with:
-          config: .structlint.yaml
-          comment-on-pr: "true"
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.12'
+          cache: true
+      - name: Build candidate and install external quality gates
+        run: |
+          QUALITY_BIN="$RUNNER_TEMP/quality-bin"; mkdir -p "$QUALITY_BIN"
+          go build -o "$QUALITY_BIN/aigate" .
+          curl -fsSL https://raw.githubusercontent.com/AxeForging/structlint/main/install.sh | STRUCTLINT_VERSION=v0.6.0 STRUCTLINT_INSTALL_DIR="$QUALITY_BIN" sh
+          curl -fsSL https://raw.githubusercontent.com/AxeForging/dupehound/main/install.sh | DUPEHOUND_VERSION=v0.1.0 DUPEHOUND_INSTALL_DIR="$QUALITY_BIN" sh
+          echo "$QUALITY_BIN" >> "$GITHUB_PATH"
+      - uses: AxeForging/gauntlet@v0.1.0
+        with:
+          since: origin/${{ github.base_ref }}
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.12'
+          cache: true
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.12'
+          cache: true
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          args: --timeout=5m
