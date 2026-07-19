@@ -43,6 +43,29 @@ func runScoped(t *testing.T, bin, workDir string, env []string, script string) (
 	return string(out), err
 }
 
+// runScopedOK runs a snippet in the scoped sandbox and asserts it ran to
+// completion (the snippet must end with `echo MARKER_DONE`). Returns the
+// combined output so callers can make their own leak/behavior assertions.
+func runScopedOK(t *testing.T, bin, workDir string, env []string, script string) string {
+	t.Helper()
+	out, _ := runScoped(t, bin, workDir, env, script)
+	if !strings.Contains(out, "MARKER_DONE") {
+		t.Fatalf("sandbox did not run to completion: %s", out)
+	}
+	return out
+}
+
+// refuteLeak fails the test if any of the given secret markers appear in out
+// (content or leaked file names from outside the scope).
+func refuteLeak(t *testing.T, out string, secrets ...string) {
+	t.Helper()
+	for _, secret := range secrets {
+		if strings.Contains(out, secret) {
+			t.Errorf("scope leaked %q outside allowed paths: %s", secret, out)
+		}
+	}
+}
+
 // TestScope_HomeHiddenFromReads verifies non-scoped home files are invisible:
 // neither their content nor their names leak into the sandbox.
 func TestScope_HomeHiddenFromReads(t *testing.T) {
@@ -55,17 +78,10 @@ func TestScope_HomeHiddenFromReads(t *testing.T) {
 
 	// cat stderr is silenced: its "No such file" error would echo the file
 	// name and false-positive the name-leak assertion below.
-	out, _ := runScoped(t, bin, workDir, env,
+	out := runScopedOK(t, bin, workDir, env,
 		fmt.Sprintf("cat %s/secret.txt 2>/dev/null; ls -a %s; echo MARKER_DONE", tmpHome, tmpHome))
-	if !strings.Contains(out, "MARKER_DONE") {
-		t.Fatalf("sandbox did not run to completion: %s", out)
-	}
-	if strings.Contains(out, "scope-secret") {
-		t.Errorf("scope leaked file CONTENT outside allowed paths: %s", out)
-	}
-	if strings.Contains(out, "secret.txt") {
-		t.Errorf("scope leaked file NAME outside allowed paths (home listing): %s", out)
-	}
+	// Neither the content nor the name of a non-scoped file may leak.
+	refuteLeak(t, out, "scope-secret", "secret.txt")
 
 	// The hidden home must explain itself: a breadcrumb README tells the agent
 	// the scope is active and where the full policy lives.
@@ -120,11 +136,8 @@ func TestScope_WritesOutsideScopeDoNotReachHost(t *testing.T) {
 	bin := buildBinary(t)
 	tmpHome, workDir, env := scopeEnv(t)
 
-	out, _ := runScoped(t, bin, workDir, env,
+	runScopedOK(t, bin, workDir, env,
 		fmt.Sprintf("echo evil > %s/evil.txt; echo tampered > %s/secret.txt; echo MARKER_DONE", tmpHome, tmpHome))
-	if !strings.Contains(out, "MARKER_DONE") {
-		t.Fatalf("sandbox did not run to completion: %s", out)
-	}
 
 	if _, err := os.Stat(filepath.Join(tmpHome, "evil.txt")); err == nil {
 		t.Error("write outside scope reached the host filesystem")
@@ -170,13 +183,8 @@ func TestScope_SymlinkEscapeBlocked(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, _ := runScoped(t, bin, workDir, env, "cat innocent-link; echo MARKER_DONE")
-	if !strings.Contains(out, "MARKER_DONE") {
-		t.Fatalf("sandbox did not run to completion: %s", out)
-	}
-	if strings.Contains(out, "scope-secret") {
-		t.Errorf("symlink escape leaked non-scoped content: %s", out)
-	}
+	out := runScopedOK(t, bin, workDir, env, "cat innocent-link 2>/dev/null; echo MARKER_DONE")
+	refuteLeak(t, out, "scope-secret")
 }
 
 // TestScope_SymlinkCreationEscapeBlocked verifies a symlink created INSIDE the
@@ -190,14 +198,9 @@ func TestScope_SymlinkCreationEscapeBlocked(t *testing.T) {
 	bin := buildBinary(t)
 	tmpHome, workDir, env := scopeEnv(t)
 
-	out, _ := runScoped(t, bin, workDir, env,
-		fmt.Sprintf("ln -s %s/secret.txt stolen && cat stolen; echo MARKER_DONE", tmpHome))
-	if !strings.Contains(out, "MARKER_DONE") {
-		t.Fatalf("sandbox did not run to completion: %s", out)
-	}
-	if strings.Contains(out, "scope-secret") {
-		t.Errorf("in-sandbox symlink creation leaked non-scoped content: %s", out)
-	}
+	out := runScopedOK(t, bin, workDir, env,
+		fmt.Sprintf("ln -s %s/secret.txt stolen && cat stolen 2>/dev/null; echo MARKER_DONE", tmpHome))
+	refuteLeak(t, out, "scope-secret")
 }
 
 // TestScope_HardlinkEscapeBlocked verifies hardlinks to non-scoped files
@@ -210,14 +213,9 @@ func TestScope_HardlinkEscapeBlocked(t *testing.T) {
 	bin := buildBinary(t)
 	tmpHome, workDir, env := scopeEnv(t)
 
-	out, _ := runScoped(t, bin, workDir, env,
-		fmt.Sprintf("ln %s/secret.txt hard-stolen && cat hard-stolen; echo MARKER_DONE", tmpHome))
-	if !strings.Contains(out, "MARKER_DONE") {
-		t.Fatalf("sandbox did not run to completion: %s", out)
-	}
-	if strings.Contains(out, "scope-secret") {
-		t.Errorf("hardlink escape leaked non-scoped content: %s", out)
-	}
+	out := runScopedOK(t, bin, workDir, env,
+		fmt.Sprintf("ln %s/secret.txt hard-stolen 2>/dev/null && cat hard-stolen 2>/dev/null; echo MARKER_DONE", tmpHome))
+	refuteLeak(t, out, "scope-secret")
 }
 
 // TestScope_DotDotTraversalBlocked verifies that when the workdir sits inside
@@ -236,16 +234,8 @@ func TestScope_DotDotTraversalBlocked(t *testing.T) {
 	}
 
 	// cat stderr silenced — its error message would echo the probed name.
-	out, _ := runScoped(t, bin, insideWorkDir, env, "cat ../secret.txt 2>/dev/null; ls ..; echo MARKER_DONE")
-	if !strings.Contains(out, "MARKER_DONE") {
-		t.Fatalf("sandbox did not run to completion: %s", out)
-	}
-	if strings.Contains(out, "scope-secret") {
-		t.Errorf("..-traversal leaked non-scoped content: %s", out)
-	}
-	if strings.Contains(out, "secret.txt") {
-		t.Errorf("..-traversal leaked non-scoped file names: %s", out)
-	}
+	out := runScopedOK(t, bin, insideWorkDir, env, "cat ../secret.txt 2>/dev/null; ls ..; echo MARKER_DONE")
+	refuteLeak(t, out, "scope-secret", "secret.txt")
 }
 
 // TestScope_AbsolutePathVariantsBlocked verifies path-normalization tricks
@@ -265,13 +255,8 @@ func TestScope_AbsolutePathVariantsBlocked(t *testing.T) {
 		"$HOME/secret.txt",
 	}
 	for _, v := range variants {
-		out, _ := runScoped(t, bin, workDir, env, fmt.Sprintf("cat %s; echo MARKER_DONE", v))
-		if !strings.Contains(out, "MARKER_DONE") {
-			t.Fatalf("sandbox did not run to completion for %q: %s", v, out)
-		}
-		if strings.Contains(out, "scope-secret") {
-			t.Errorf("path variant %q leaked non-scoped content: %s", v, out)
-		}
+		out := runScopedOK(t, bin, workDir, env, fmt.Sprintf("cat %s 2>/dev/null; echo MARKER_DONE", v))
+		refuteLeak(t, out, "scope-secret")
 	}
 }
 
@@ -294,10 +279,7 @@ func TestScope_DenyReadWinsInsideAllowedPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, _ := runScoped(t, bin, workDir, env, fmt.Sprintf("cat %s; echo MARKER_DONE", token))
-	if !strings.Contains(out, "MARKER_DONE") {
-		t.Fatalf("sandbox did not run to completion: %s", out)
-	}
+	out := runScopedOK(t, bin, workDir, env, fmt.Sprintf("cat %s 2>/dev/null; echo MARKER_DONE", token))
 	if strings.Contains(out, "token-secret") {
 		t.Errorf("deny_read must win over allowed_paths, leaked: %s", out)
 	}
@@ -313,11 +295,8 @@ func TestScope_RootStaysReadOnly(t *testing.T) {
 	bin := buildBinary(t)
 	_, workDir, env := scopeEnv(t)
 
-	out, _ := runScoped(t, bin, workDir, env,
+	out := runScopedOK(t, bin, workDir, env,
 		"echo evil > /usr/aigate-scope-test 2>&1; echo EXIT:$?; echo MARKER_DONE")
-	if !strings.Contains(out, "MARKER_DONE") {
-		t.Fatalf("sandbox did not run to completion: %s", out)
-	}
 	if _, err := os.Stat("/usr/aigate-scope-test"); err == nil {
 		t.Error("write to /usr reached the host filesystem")
 	}
