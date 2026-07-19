@@ -49,6 +49,7 @@ integration/     End-to-end CLI tests
   cli_test.go             Build binary, run real commands
   sandbox_test.go         Sandbox behaviour end-to-end
   sandbox_escape_test.go  Adversarial escape tests (-short skips them)
+  scope_test.go           allowed_paths scope + bypass attempts (-short skips)
 ```
 
 ## Key Design Decisions
@@ -59,6 +60,7 @@ integration/     End-to-end CLI tests
 - **No CGO**: All platform operations use `exec.Command` to call system utilities (setfacl, groupadd, dscl, chmod, bwrap, slirp4netns, iptables/ip6tables).
 - **IPv6 sandbox is opt-in by capability detection**: `ipv6SandboxSupported()` requires both kernel v6 enabled and `ip6tables` on PATH. Either missing → sandbox runs IPv4-only. Partial v6 (NAT but no filter) is refused — it would silently bypass `allow_net`.
 - **Config merging**: Global config (`~/.aigate/config.yaml`) + project config (`.aigate.yaml`) merge with project extending global.
+- **Filesystem scope (`allowed_paths`)**: when non-empty, `$HOME` is replaced by an empty tmpfs (bwrap `--tmpfs`; rbind-stage + tmpfs in the unshare fallback; Seatbelt read+write denies on macOS) and only the workdir + allowed paths are bound back read-write. Non-scoped home files are invisible — reads AND writes blocked; deny rules are mounted after scope binds so they always win. Fallback fails closed (`exit 125`) if the hide cannot be established. `~/.aigate-scope-README` inside the sandbox + `/tmp/.aigate-policy` explain the policy to agents. Empty list = legacy behavior (home fully accessible).
 - **Audit log is append-only JSON Lines**: `AuditService` writes `run_started` / `blocked` events to `~/.aigate/audit.jsonl` under a mutex. `aigate serve` (`internal/web`) is a read-only dashboard over that file; it never mutates sandbox state. Keep the dashboard out of the sandbox enforcement path.
 
 ## Testing

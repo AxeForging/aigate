@@ -30,6 +30,7 @@ aigate doctor                  # Verify prerequisites
 # Add restrictions
 aigate deny read .env secrets/ *.pem
 aigate deny exec curl wget ssh
+aigate allow path ~/experiments   # scope: only workdir + allowed paths accessible
 
 # Run any AI tool inside the sandbox
 aigate run -- claude
@@ -49,6 +50,7 @@ AI coding tools rely on application-level permission systems that can be bypasse
 ## Features
 
 - **File isolation** - POSIX ACLs (Linux) / macOS ACLs deny read access to secrets
+- **Filesystem scope** - `allowed_paths` hides everything in `$HOME` except the working directory and the paths you allow — non-scoped files are invisible to the agent (reads *and* writes blocked at the kernel)
 - **Process isolation** - Bubblewrap (`bwrap`) + mount namespaces isolate the sandbox declaratively (Linux); Seatbelt on macOS
 - **Network isolation** - `bwrap --unshare-net` + `slirp4netns` + `iptables` (+ `ip6tables` for IPv6 when available) restrict egress to allowed domains (Linux)
 - **Command blocking** - Deny execution of dangerous commands (curl, wget, ssh)
@@ -76,8 +78,11 @@ aigate doctor                               # Check prerequisites and isolation 
 aigate deny read .env secrets/ *.pem        # Block file access
 aigate deny exec curl wget ssh              # Block commands
 aigate deny net --except api.anthropic.com  # Restrict network
+aigate allow path ~/experiments             # Widen the filesystem scope
+aigate deny path ~/experiments              # Narrow it again (empty = scope off)
 aigate allow read .env                      # Remove a deny rule
 aigate run -- claude                        # Run AI tool in sandbox
+aigate run --allow-path ~/notes -- claude   # Session-only scope addition
 aigate status                               # Show current rules
 aigate serve                                # Local web dashboard over the audit log
 aigate help-ai                              # Show AI-friendly usage examples
