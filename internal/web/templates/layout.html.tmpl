@@ -5,6 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AxeForge AiGate</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23d9531e'/%3E%3Ctext x='16' y='21.5' text-anchor='middle' font-family='Arial,sans-serif' font-size='14' font-weight='900' fill='%23fff7ef'%3EAF%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -67,12 +68,16 @@
             <p class="panel-label">active policy</p>
             <h2>Rules enforced by the operating system</h2>
           </div>
-          <button type="button" data-action="refresh" aria-label="Refresh dashboard">Sync</button>
+          <div class="sync-cluster">
+            <span class="sync-note" data-field="sync-note" aria-live="polite">synced just now</span>
+            <button type="button" data-action="refresh" aria-label="Refresh dashboard">Sync</button>
+          </div>
         </div>
         <div class="rule-counters">
           <div><span>deny read</span><strong data-field="rule-read">{{len .Rules.DenyRead}}</strong></div>
           <div><span>deny exec</span><strong data-field="rule-exec">{{len .Rules.DenyExec}}</strong></div>
           <div><span>allow net</span><strong data-field="rule-net">{{len .Rules.AllowNet}}</strong></div>
+          <div><span>scope paths</span><strong data-field="rule-scope">{{len .Rules.AllowedPaths}}</strong></div>
         </div>
         <div class="rule-lists">
           <div>
@@ -87,6 +92,10 @@
             <h2>Allowed network</h2>
             <ul data-list="allow-net">{{range .Rules.AllowNet}}<li>{{.}}</li>{{else}}<li class="muted">all outbound allowed</li>{{end}}</ul>
           </div>
+          <div>
+            <h2>Session scope</h2>
+            <ul data-list="allowed-paths">{{range .Rules.AllowedPaths}}<li>{{.}}</li>{{else}}<li class="muted">scope off — $HOME fully accessible</li>{{end}}</ul>
+          </div>
         </div>
       </article>
 
@@ -94,6 +103,8 @@
         <p class="panel-label">block mix</p>
         <h2>Where the sandbox is taking pressure</h2>
         <div class="bars" data-field="bars"></div>
+        <p class="panel-label spark-label">activity — last 14 days</p>
+        <div class="spark" data-field="spark" role="img" aria-label="Daily blocked and run activity"></div>
         <p class="path-note">audit log: <span>{{.AuditPath}}</span></p>
       </article>
     </section>
