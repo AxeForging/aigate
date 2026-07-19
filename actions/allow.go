@@ -53,6 +53,36 @@ func (a *AllowAction) ExecuteNet(c *cli.Context) error {
 	return a.removeRule(domain.RuleTypeNet, domains)
 }
 
+// ExecutePath adds paths to the allowed_paths session scope. Note the inverse
+// of the deny rules: "allow path" ADDS an entry (widening what the sandbox
+// may access), while "deny path" removes one.
+func (a *AllowAction) ExecutePath(c *cli.Context) error {
+	if c.Bool("verbose") {
+		helpers.SetupLogger("debug")
+	}
+	paths := c.Args()
+	if len(paths) == 0 {
+		return fmt.Errorf("usage: aigate allow path <path> [path...]")
+	}
+
+	cfg, err := a.configSvc.LoadGlobal()
+	if err != nil {
+		return fmt.Errorf("%w", helpers.ErrNotInitialized)
+	}
+	if err := a.ruleSvc.AddAllowedPaths(cfg, paths); err != nil {
+		return err
+	}
+	if err := a.configSvc.SaveGlobal(cfg); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	fmt.Println("Added to allowed_paths (scope mode active — the rest of $HOME is hidden inside the sandbox):")
+	for _, p := range paths {
+		fmt.Printf("  - %s\n", p)
+	}
+	return nil
+}
+
 func (a *AllowAction) removeRule(ruleType domain.RuleType, patterns []string) error {
 	cfg, err := a.configSvc.LoadGlobal()
 	if err != nil {

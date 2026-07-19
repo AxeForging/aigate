@@ -48,6 +48,26 @@ func (s *RuleService) RemoveRule(cfg *domain.Config, ruleType domain.RuleType, p
 	return nil
 }
 
+// AddAllowedPaths adds paths to the session scope. Unlike the deny rules,
+// allowed_paths is an allowlist: adding entries widens what the sandbox may
+// access (and having any entries at all turns scope mode on).
+func (s *RuleService) AddAllowedPaths(cfg *domain.Config, paths []string) error {
+	if len(paths) == 0 {
+		return fmt.Errorf("%w: no paths provided", helpers.ErrInvalidRule)
+	}
+	cfg.AllowedPaths = appendUnique(cfg.AllowedPaths, paths)
+	return nil
+}
+
+// RemoveAllowedPaths removes paths from the session scope.
+func (s *RuleService) RemoveAllowedPaths(cfg *domain.Config, paths []string) error {
+	if len(paths) == 0 {
+		return fmt.Errorf("%w: no paths provided", helpers.ErrInvalidRule)
+	}
+	cfg.AllowedPaths = removePatterns(cfg.AllowedPaths, paths)
+	return nil
+}
+
 func (s *RuleService) ListRules(cfg *domain.Config) []domain.Rule {
 	var rules []domain.Rule
 	if len(cfg.DenyRead) > 0 {
@@ -66,6 +86,12 @@ func (s *RuleService) ListRules(cfg *domain.Config) []domain.Rule {
 		rules = append(rules, domain.Rule{
 			Type:     domain.RuleTypeNet,
 			Patterns: cfg.AllowNet,
+		})
+	}
+	if len(cfg.AllowedPaths) > 0 {
+		rules = append(rules, domain.Rule{
+			Type:     domain.RuleTypePath,
+			Patterns: cfg.AllowedPaths,
 		})
 	}
 	return rules

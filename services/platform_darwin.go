@@ -203,10 +203,61 @@ func (p *DarwinPlatform) RunSandboxed(profile domain.SandboxProfile, cmd string,
 	return p.exec.RunPassthroughWith(stdout, stderr, "sandbox-exec", sandboxArgs...)
 }
 
+// writeSeatbeltScopeRules emits the allowed_paths scope rules: nothing under
+// $HOME is readable or writable, and nothing anywhere is writable, unless it
+// is the workdir, an allowed path, or a temp/dev location tools require.
+// No-op when scope mode is off or unenforceable (workdir/scope covers home).
+func writeSeatbeltScopeRules(sb *strings.Builder, profile domain.SandboxProfile) {
+	if len(profile.Config.AllowedPaths) == 0 {
+		return
+	}
+	home, homeErr := os.UserHomeDir()
+	if homeErr != nil {
+		return
+	}
+	scoped := resolveScopedPaths(profile)
+	if profile.WorkDir == home || underAny(home, scoped) {
+		return // run action warns: scope unenforceable from $HOME itself
+	}
+
+	fmt.Fprintf(sb, "(deny file-write*)\n")
+	fmt.Fprintf(sb, "(deny file-read* (subpath %q))\n", home)
+
+	// Temp + device locations interactive tools need to function.
+	for _, p := range []string{"/tmp", "/private/tmp", "/private/var/tmp", "/private/var/folders", "/dev"} {
+		fmt.Fprintf(sb, "(allow file-write* (subpath %q))\n", p)
+	}
+
+	allowPath := func(path string) {
+		info, err := os.Stat(path)
+		if err != nil {
+			return
+		}
+		if info.IsDir() {
+			fmt.Fprintf(sb, "(allow file-read* file-write* (subpath %q))\n", path)
+		} else {
+			fmt.Fprintf(sb, "(allow file-read* file-write* (literal %q))\n", path)
+		}
+	}
+	if profile.WorkDir != "" {
+		allowPath(profile.WorkDir)
+	}
+	for _, p := range scoped {
+		allowPath(p)
+	}
+}
+
 func generateSeatbeltProfile(profile domain.SandboxProfile) string {
 	var sb strings.Builder
 	sb.WriteString("(version 1)\n")
 	sb.WriteString("(allow default)\n")
+
+	// Scope mode (allowed_paths): hide $HOME from reads and writes, deny
+	// writes everywhere, then allow the workdir + allowed paths (and the temp
+	// locations interactive tools need) back in. Placed FIRST so the specific
+	// deny_read / deny_exec / config-dir rules below still win — Seatbelt
+	// gives later rules precedence.
+	writeSeatbeltScopeRules(&sb, profile)
 
 	// Deny read access to protected paths
 	for _, pattern := range profile.Config.DenyRead {

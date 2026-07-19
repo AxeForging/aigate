@@ -209,6 +209,7 @@ func (p *LinuxPlatform) runUnshare(profile domain.SandboxProfile, cmd string, ar
 	// Modern unshare --mount does this (util-linux 2.27+), but be explicit for safety.
 	sb.WriteString("mount --make-rprivate / 2>/dev/null || true\n")
 	sb.WriteString(buildPolicyFile(profile))
+	sb.WriteString(buildScopeOverrides(profile))
 	sb.WriteString(buildConfigDirOverride())
 	sb.WriteString(buildMountOverrides(profile))
 	sb.WriteString(buildExecDenyOverrides(profile))
@@ -522,6 +523,7 @@ func buildNetFilterScript(allowNetHosts, dnsServersV4, dnsServersV6 []string, ip
 
 	// Write policy file + mount overrides (deny_read markers point here)
 	sb.WriteString(buildPolicyFile(profile))
+	sb.WriteString(buildScopeOverrides(profile))
 	sb.WriteString(buildConfigDirOverride())
 	sb.WriteString(buildMountOverrides(profile))
 	sb.WriteString(buildExecDenyOverrides(profile))
@@ -553,7 +555,77 @@ func buildPolicyFile(profile domain.SandboxProfile) string {
 		fmt.Fprintf(&sb, "printf 'allow_net: %s\\n'\n", strings.Join(profile.Config.AllowNet, ", "))
 		sb.WriteString("printf 'Only these hosts are reachable. All other outbound connections are rejected.\\n\\n'\n")
 	}
+	if len(profile.Config.AllowedPaths) > 0 {
+		fmt.Fprintf(&sb, "printf 'allowed_paths: %s\\n'\n", strings.Join(profile.Config.AllowedPaths, ", "))
+		sb.WriteString("printf 'Only the working directory and these paths are accessible. The rest of the home directory is hidden and the filesystem is read-only.\\n\\n'\n")
+	}
 	sb.WriteString("} > /tmp/.aigate-policy\n")
+	return sb.String()
+}
+
+// buildScopeOverrides generates shell commands enforcing allowed_paths in the
+// unshare fallback. $HOME's tree is rbind-staged aside, an empty tmpfs is
+// mounted over $HOME (hiding every non-scoped file from both reads and
+// writes), then the workdir and each allowed path are bound back from the
+// stage. The stage is lazily unmounted before the target command runs.
+//
+// Fail-closed: if the hide cannot be established, the run aborts rather than
+// silently running unscoped.
+//
+// Must run BEFORE buildConfigDirOverride and buildMountOverrides — mounts
+// placed under $HOME earlier would be shadowed by the tmpfs.
+func buildScopeOverrides(profile domain.SandboxProfile) string {
+	if len(profile.Config.AllowedPaths) == 0 {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	scoped := resolveScopedPaths(profile)
+	// Scope cannot be enforced when home itself is in scope: the workdir (or
+	// an allowed path) would bind the whole home back in. The run action warns
+	// about this; enforce nothing rather than break the session.
+	if profile.WorkDir == home || underAny(home, scoped) {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("_scope_stage=$(mktemp -d /tmp/.aigate-scope-XXXXXX)\n")
+	fmt.Fprintf(&sb,
+		"if ! { mount --rbind \"%s\" \"$_scope_stage\" && mount -t tmpfs tmpfs \"%s\"; }; then echo '[aigate] failed to enforce allowed_paths scope' >&2; exit 125; fi\n",
+		home, home)
+
+	// Breadcrumb explaining why home appears mostly empty (mirrors the bwrap
+	// ~/.aigate-scope-README marker).
+	fmt.Fprintf(&sb, "printf '%s' > %q 2>/dev/null || true\n",
+		strings.ReplaceAll(scopeMarkerContent(profile), "'", `'\''`),
+		filepath.Join(home, ".aigate-scope-README"))
+
+	rebind := func(path string, isDir bool) {
+		rel, relErr := filepath.Rel(home, path)
+		if relErr != nil || strings.HasPrefix(rel, "..") {
+			return // outside home: unaffected by the home tmpfs
+		}
+		src := "$_scope_stage/" + rel
+		if isDir {
+			fmt.Fprintf(&sb, "{ mkdir -p \"%s\" && mount --bind \"%s\" \"%s\"; } 2>/dev/null || true\n", path, src, path)
+		} else {
+			fmt.Fprintf(&sb, "{ mkdir -p \"%s\" && touch \"%s\" && mount --bind \"%s\" \"%s\"; } 2>/dev/null || true\n",
+				filepath.Dir(path), path, src, path)
+		}
+	}
+	if profile.WorkDir != "" {
+		rebind(profile.WorkDir, true)
+	}
+	for _, path := range scoped {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			continue
+		}
+		rebind(path, info.IsDir())
+	}
+	sb.WriteString("umount -l \"$_scope_stage\" 2>/dev/null; rmdir \"$_scope_stage\" 2>/dev/null || true\n")
 	return sb.String()
 }
 

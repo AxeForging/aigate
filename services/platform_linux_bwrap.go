@@ -84,25 +84,63 @@ func (p *LinuxPlatform) buildBwrapArgs(profile domain.SandboxProfile, tmpFiles *
 		"--die-with-parent",
 	}
 
-	// Writable home: tools (claude, git, npm, etc.) need to write to their
-	// own config/cache dirs. We then protect sensitive paths with ro-bind
-	// overlays below.
+	// Home mount: without scope mode, tools (claude, git, npm, etc.) get a
+	// writable $HOME for their config/cache dirs. With allowed_paths
+	// configured, $HOME is replaced by an empty tmpfs — non-scoped files are
+	// invisible, so both reads and writes fail to reach the host — and only
+	// the workdir + allowed paths are bound back in read-write below. Writes
+	// elsewhere under $HOME land in the ephemeral tmpfs and are discarded.
+	scoped := len(profile.Config.AllowedPaths) > 0
 	home, homeErr := os.UserHomeDir()
 	if homeErr == nil {
-		args = append(args, "--bind", home, home)
+		if scoped {
+			args = append(args, "--tmpfs", home)
+		} else {
+			args = append(args, "--bind", home, home)
+		}
 	}
 
-	// Writable workdir: if the workdir is outside $HOME (e.g. /opt/project),
-	// add an explicit writable bind mount. Skip if already covered by $HOME.
+	// Workdir: always accessible read-write. Without scope mode it's already
+	// covered when inside $HOME; with scope mode the bind must be explicit to
+	// punch through the tmpfs hiding home.
 	if profile.WorkDir != "" {
-		if homeErr != nil || !strings.HasPrefix(profile.WorkDir, home+"/") && profile.WorkDir != home {
+		if scoped || homeErr != nil || !strings.HasPrefix(profile.WorkDir, home+"/") && profile.WorkDir != home {
 			args = append(args, "--bind", profile.WorkDir, profile.WorkDir)
 		}
 	}
 
-	// Protect sensitive dotfiles from tampering by AI agents.
-	// These are overlaid read-only on top of the writable $HOME bind.
+	// allowed_paths: bound back in read-write on top of the home tmpfs (bwrap
+	// creates the mount points inside the tmpfs automatically). Sensitive
+	// dotfiles and deny mounts are applied after so they always win.
+	var scopedPaths []string
+	if scoped {
+		// Drop a breadcrumb at the root of the hidden home so an agent that
+		// lists or probes $HOME learns aigate scoped it (and why), instead of
+		// only seeing bare "No such file" errors on non-scoped paths.
+		if homeErr == nil {
+			markerPath, mErr := writeTmpFile("aigate-scope-*", scopeMarkerContent(profile))
+			if mErr != nil {
+				return nil, fmt.Errorf("write scope marker: %w", mErr)
+			}
+			*tmpFiles = append(*tmpFiles, markerPath)
+			args = append(args, "--ro-bind", markerPath, filepath.Join(home, ".aigate-scope-README"))
+		}
+		scopedPaths = resolveScopedPaths(profile)
+		for _, path := range scopedPaths {
+			args = append(args, "--bind", path, path)
+		}
+	}
+
+	// Protect sensitive dotfiles from tampering by AI agents. Without scope
+	// mode they are overlaid read-only on the writable $HOME bind. In scope
+	// mode the home tmpfs already hides them — an ro-bind there would
+	// re-expose content — so only re-protect ones reachable again through the
+	// workdir or an allowed path.
 	if homeErr == nil {
+		exposedRoots := append([]string{}, scopedPaths...)
+		if profile.WorkDir != "" {
+			exposedRoots = append(exposedRoots, profile.WorkDir)
+		}
 		for _, sensitive := range []string{
 			".ssh",
 			".gnupg",
@@ -113,9 +151,13 @@ func (p *LinuxPlatform) buildBwrapArgs(profile domain.SandboxProfile, tmpFiles *
 			".gitconfig",
 		} {
 			path := filepath.Join(home, sensitive)
-			if _, err := os.Stat(path); err == nil {
-				args = append(args, "--ro-bind", path, path)
+			if _, err := os.Stat(path); err != nil {
+				continue
 			}
+			if scoped && !underAny(path, exposedRoots) {
+				continue // already hidden by the home tmpfs
+			}
+			args = append(args, "--ro-bind", path, path)
 		}
 		// Hide aigate config directory completely.
 		args = append(args, "--tmpfs", filepath.Join(home, ".aigate"))
@@ -193,6 +235,25 @@ func policyFileContent(profile domain.SandboxProfile) string {
 		fmt.Fprintf(&sb, "allow_net: %s\n", strings.Join(profile.Config.AllowNet, ", "))
 		sb.WriteString("Only these hosts are reachable. All other outbound connections are rejected.\n\n")
 	}
+	if len(profile.Config.AllowedPaths) > 0 {
+		fmt.Fprintf(&sb, "allowed_paths: %s\n", strings.Join(profile.Config.AllowedPaths, ", "))
+		sb.WriteString("Only the working directory and these paths are accessible. The rest of the home directory is hidden and the filesystem is read-only.\n\n")
+	}
+	return sb.String()
+}
+
+// scopeMarkerContent is the breadcrumb dropped at ~/.aigate-scope-README when
+// scope mode is active, explaining why most of $HOME appears empty.
+func scopeMarkerContent(profile domain.SandboxProfile) string {
+	var sb strings.Builder
+	sb.WriteString("[aigate] filesystem scope active\n\n")
+	sb.WriteString("Most of this home directory is intentionally hidden by aigate sandbox policy.\n")
+	sb.WriteString("Files outside the allowed scope are neither readable nor writable — a write\n")
+	sb.WriteString("here goes to an ephemeral overlay and is discarded when the session ends.\n\n")
+	if len(profile.Config.AllowedPaths) > 0 {
+		fmt.Fprintf(&sb, "Accessible: the working directory plus %s\n\n", strings.Join(profile.Config.AllowedPaths, ", "))
+	}
+	sb.WriteString("See /tmp/.aigate-policy for the full active policy.\n")
 	return sb.String()
 }
 

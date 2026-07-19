@@ -74,6 +74,17 @@ func (a *StatusAction) Execute(c *cli.Context) error {
 		fmt.Printf("  - %s\n", r)
 	}
 
+	fmt.Println("\nScope (allowed_paths):")
+	if len(cfg.AllowedPaths) == 0 {
+		fmt.Println("  (off - $HOME fully accessible in the sandbox)")
+	} else {
+		fmt.Println("  Only the working directory and these paths are accessible;")
+		fmt.Println("  the rest of $HOME is hidden inside the sandbox:")
+		for _, r := range cfg.AllowedPaths {
+			fmt.Printf("  - %s\n", r)
+		}
+	}
+
 	fmt.Printf("\nResource Limits:\n")
 	fmt.Printf("  Max Memory:  %s\n", cfg.ResourceLimits.MaxMemory)
 	fmt.Printf("  Max CPU:     %d%%\n", cfg.ResourceLimits.MaxCPUPercent)

@@ -55,6 +55,78 @@ func TestAddDenyRule_NoDuplicates(t *testing.T) {
 	}
 }
 
+func TestAddAllowedPaths(t *testing.T) {
+	svc := NewRuleService()
+	cfg := &domain.Config{}
+
+	if err := svc.AddAllowedPaths(cfg, []string{"~/.cache", "~/.config"}); err != nil {
+		t.Fatalf("AddAllowedPaths() error = %v", err)
+	}
+	if len(cfg.AllowedPaths) != 2 {
+		t.Errorf("AllowedPaths len = %d, want 2", len(cfg.AllowedPaths))
+	}
+
+	// Duplicates are not added twice.
+	if err := svc.AddAllowedPaths(cfg, []string{"~/.cache"}); err != nil {
+		t.Fatalf("AddAllowedPaths() duplicate error = %v", err)
+	}
+	if len(cfg.AllowedPaths) != 2 {
+		t.Errorf("AllowedPaths len = %d after duplicate add, want 2", len(cfg.AllowedPaths))
+	}
+}
+
+func TestAddAllowedPaths_Empty(t *testing.T) {
+	svc := NewRuleService()
+	cfg := &domain.Config{}
+	if err := svc.AddAllowedPaths(cfg, nil); err == nil {
+		t.Error("AddAllowedPaths() with no paths should error")
+	}
+}
+
+func TestRemoveAllowedPaths(t *testing.T) {
+	svc := NewRuleService()
+	cfg := &domain.Config{AllowedPaths: []string{"~/.cache", "~/.config"}}
+
+	if err := svc.RemoveAllowedPaths(cfg, []string{"~/.config"}); err != nil {
+		t.Fatalf("RemoveAllowedPaths() error = %v", err)
+	}
+	if len(cfg.AllowedPaths) != 1 || cfg.AllowedPaths[0] != "~/.cache" {
+		t.Errorf("AllowedPaths = %v, want [~/.cache]", cfg.AllowedPaths)
+	}
+
+	// Removing the last entry turns scope mode off (empty list).
+	if err := svc.RemoveAllowedPaths(cfg, []string{"~/.cache"}); err != nil {
+		t.Fatalf("RemoveAllowedPaths() error = %v", err)
+	}
+	if len(cfg.AllowedPaths) != 0 {
+		t.Errorf("AllowedPaths = %v, want empty", cfg.AllowedPaths)
+	}
+}
+
+func TestRemoveAllowedPaths_Empty(t *testing.T) {
+	svc := NewRuleService()
+	cfg := &domain.Config{}
+	if err := svc.RemoveAllowedPaths(cfg, nil); err == nil {
+		t.Error("RemoveAllowedPaths() with no paths should error")
+	}
+}
+
+func TestListRules_IncludesAllowedPaths(t *testing.T) {
+	svc := NewRuleService()
+	cfg := &domain.Config{AllowedPaths: []string{"~/.cache"}}
+
+	rules := svc.ListRules(cfg)
+	found := false
+	for _, r := range rules {
+		if r.Type == domain.RuleTypePath && len(r.Patterns) == 1 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ListRules() should include a path rule, got: %v", rules)
+	}
+}
+
 func TestAddDenyRule_EmptyPatterns(t *testing.T) {
 	svc := NewRuleService()
 	cfg := &domain.Config{}

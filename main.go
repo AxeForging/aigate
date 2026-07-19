@@ -32,7 +32,7 @@ func main() {
 	initAction := actions.NewInitAction(configSvc)
 	setupAction := actions.NewSetupAction(platform, configSvc)
 	helpAIAction := actions.NewHelpAIAction()
-	doctorAction := actions.NewDoctorAction()
+	doctorAction := actions.NewDoctorAction(configSvc, platform)
 	denyAction := actions.NewDenyAction(ruleSvc, configSvc, platform)
 	allowAction := actions.NewAllowAction(ruleSvc, configSvc, platform)
 	runAction := actions.NewRunAction(runnerSvc, configSvc, platform)
@@ -63,28 +63,38 @@ func main() {
 			Usage: "Add deny rules for AI agent isolation",
 			Subcommands: []cli.Command{
 				{
-					Name:   "read",
-					Usage:  "Deny AI agent read access to files/directories",
-					Flags:  []cli.Flag{verboseFlag, dryRunFlag},
-					Action: denyAction.ExecuteRead,
+					Name:        "read",
+					Usage:       "Deny AI agent read access to files/directories",
+					Description: "Examples:\n   aigate deny read .env secrets/ '*.pem'\n   aigate deny read ~/.aws/ terraform.tfstate",
+					Flags:       []cli.Flag{verboseFlag, dryRunFlag},
+					Action:      denyAction.ExecuteRead,
 				},
 				{
-					Name:   "exec",
-					Usage:  "Deny AI agent from executing specific commands",
-					Flags:  []cli.Flag{verboseFlag, dryRunFlag},
-					Action: denyAction.ExecuteExec,
+					Name:        "exec",
+					Usage:       "Deny AI agent from executing specific commands",
+					Description: "Examples:\n   aigate deny exec curl wget ssh\n   aigate deny exec 'kubectl delete'   # block a single subcommand",
+					Flags:       []cli.Flag{verboseFlag, dryRunFlag},
+					Action:      denyAction.ExecuteExec,
 				},
 				{
-					Name:   "net",
-					Usage:  "Restrict AI agent network access (allow only --except domains)",
-					Flags:  []cli.Flag{exceptFlag, verboseFlag, dryRunFlag},
-					Action: denyAction.ExecuteNet,
+					Name:        "net",
+					Usage:       "Restrict AI agent network access (allow only --except domains)",
+					Description: "Examples:\n   aigate deny net --except api.anthropic.com --except api.github.com",
+					Flags:       []cli.Flag{exceptFlag, verboseFlag, dryRunFlag},
+					Action:      denyAction.ExecuteNet,
+				},
+				{
+					Name:        "path",
+					Usage:       "Remove a path from the allowed_paths scope (narrows sandbox access)",
+					Description: "Examples:\n   aigate deny path ~/.npm\n\nRemoving the last entry turns scope mode off ($HOME fully accessible again).",
+					Flags:       []cli.Flag{verboseFlag},
+					Action:      denyAction.ExecutePath,
 				},
 			},
 		},
 		{
 			Name:  "allow",
-			Usage: "Remove deny rules",
+			Usage: "Remove deny rules / widen the sandbox scope",
 			Subcommands: []cli.Command{
 				{
 					Name:   "read",
@@ -104,14 +114,22 @@ func main() {
 					Flags:  []cli.Flag{verboseFlag},
 					Action: allowAction.ExecuteNet,
 				},
+				{
+					Name:        "path",
+					Usage:       "Add a path to the allowed_paths scope (activates scope mode)",
+					Description: "With scope mode active, only the working directory and allowed paths are\naccessible inside the sandbox — the rest of $HOME is hidden (reads AND writes).\n\nExamples:\n   aigate allow path ~/.cache ~/.config\n   aigate allow path ../shared-lib",
+					Flags:       []cli.Flag{verboseFlag},
+					Action:      allowAction.ExecutePath,
+				},
 			},
 		},
 		{
-			Name:    "run",
-			Aliases: []string{"r"},
-			Usage:   "Run a command inside the AI sandbox (use -- before command)",
-			Flags:   []cli.Flag{verboseFlag, configFlag},
-			Action:  runAction.Execute,
+			Name:        "run",
+			Aliases:     []string{"r"},
+			Usage:       "Run a command inside the AI sandbox (use -- before command)",
+			Description: "Examples:\n   aigate run -- claude\n   aigate run -- bash -c \"npm test\"\n   aigate run --allow-path ~/notes -- claude   # extra scope path, this session only",
+			Flags:       []cli.Flag{verboseFlag, configFlag, allowPathFlag},
+			Action:      runAction.Execute,
 		},
 		{
 			Name:    "status",
@@ -127,9 +145,10 @@ func main() {
 			Action: resetAction.Execute,
 		},
 		{
-			Name:   "doctor",
-			Usage:  "Check sandbox prerequisites and show active isolation mode",
-			Action: doctorAction.Execute,
+			Name:        "doctor",
+			Usage:       "Check sandbox prerequisites and show active isolation mode",
+			Description: "Checks your config, OS accounts, and sandbox tooling, then prints a verdict\n(READY / DEGRADED / BLOCKED) with copy-pasteable next steps.\nExits non-zero when the sandbox cannot run, so scripts can gate on it.",
+			Action:      doctorAction.Execute,
 		},
 		{
 			Name:  "serve",

@@ -3,6 +3,7 @@ package actions
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/AxeForging/aigate/domain"
@@ -47,6 +48,13 @@ func (a *RunAction) Execute(c *cli.Context) error {
 	projectCfg, _ := a.configSvc.LoadProject(workDir)
 	merged := a.configSvc.Merge(globalCfg, projectCfg)
 
+	// Session-only scope additions from --allow-path.
+	for _, p := range c.StringSlice("allow-path") {
+		if !slices.Contains(merged.AllowedPaths, p) {
+			merged.AllowedPaths = append(merged.AllowedPaths, p)
+		}
+	}
+
 	profile := domain.SandboxProfile{
 		Config:  *merged,
 		WorkDir: workDir,
@@ -59,16 +67,17 @@ func (a *RunAction) Execute(c *cli.Context) error {
 		Int("deny_read", len(merged.DenyRead)).
 		Int("deny_exec", len(merged.DenyExec)).
 		Int("allow_net", len(merged.AllowNet)).
+		Int("allowed_paths", len(merged.AllowedPaths)).
 		Msg("Running sandboxed command")
 
-	printSandboxBanner(merged)
+	printSandboxBanner(merged, workDir)
 
 	return a.runner.Run(profile, cmd, cmdArgs)
 }
 
 // printSandboxBanner prints active restrictions to stderr so AI agents
 // (and users) can see exactly what is enforced inside the sandbox.
-func printSandboxBanner(cfg *domain.Config) {
+func printSandboxBanner(cfg *domain.Config, workDir string) {
 	fmt.Fprintln(os.Stderr, "[aigate] sandbox active")
 	if len(cfg.DenyRead) > 0 {
 		fmt.Fprintf(os.Stderr, "[aigate] deny_read: %s\n", strings.Join(cfg.DenyRead, ", "))
@@ -78,6 +87,12 @@ func printSandboxBanner(cfg *domain.Config) {
 	}
 	if len(cfg.AllowNet) > 0 {
 		fmt.Fprintf(os.Stderr, "[aigate] allow_net: %s (all other outbound connections will be blocked)\n", strings.Join(cfg.AllowNet, ", "))
+	}
+	if len(cfg.AllowedPaths) > 0 {
+		fmt.Fprintf(os.Stderr, "[aigate] allowed_paths: %s (plus the working directory; the rest of $HOME is hidden)\n", strings.Join(cfg.AllowedPaths, ", "))
+		if home, err := os.UserHomeDir(); err == nil && workDir == home {
+			fmt.Fprintln(os.Stderr, "[aigate] WARNING: running from your home directory — allowed_paths scoping cannot be enforced (the working directory is always accessible). cd into a project directory to enable it.")
+		}
 	}
 	if len(cfg.MaskStdout.Presets) > 0 || len(cfg.MaskStdout.Patterns) > 0 {
 		var parts []string
