@@ -1,0 +1,9 @@
+custom_gates:
+  structlint:
+    command: ["structlint", "validate", "--format", "github"]
+    parser: github-annotations
+    line_scoped: false
+  dupehound:
+    command: ["dupehound", "scan", "--format", "github", "--quiet"]
+    parser: github-annotations
+    line_scoped: true
