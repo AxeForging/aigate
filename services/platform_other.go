@@ -17,13 +17,13 @@ func newPlatform(exec Executor) Platform {
 
 type unsupportedPlatform struct{}
 
-func (p *unsupportedPlatform) Name() string                         { return "unsupported" }
-func (p *unsupportedPlatform) CreateGroup(string) error             { return errUnsupported }
-func (p *unsupportedPlatform) CreateUser(string, string) error      { return errUnsupported }
-func (p *unsupportedPlatform) DeleteGroup(string) error             { return errUnsupported }
-func (p *unsupportedPlatform) DeleteUser(string) error              { return errUnsupported }
-func (p *unsupportedPlatform) GroupExists(string) (bool, error)     { return false, errUnsupported }
-func (p *unsupportedPlatform) UserExists(string) (bool, error)      { return false, errUnsupported }
+func (p *unsupportedPlatform) Name() string                     { return "unsupported" }
+func (p *unsupportedPlatform) CreateGroup(string) error         { return errUnsupported }
+func (p *unsupportedPlatform) CreateUser(string, string) error  { return errUnsupported }
+func (p *unsupportedPlatform) DeleteGroup(string) error         { return errUnsupported }
+func (p *unsupportedPlatform) DeleteUser(string) error          { return errUnsupported }
+func (p *unsupportedPlatform) GroupExists(string) (bool, error) { return false, errUnsupported }
+func (p *unsupportedPlatform) UserExists(string) (bool, error)  { return false, errUnsupported }
 
 func (p *unsupportedPlatform) SetFileACLDeny(string, []string, string) error { return errUnsupported }
 func (p *unsupportedPlatform) RemoveFileACL(string, []string, string) error  { return errUnsupported }
