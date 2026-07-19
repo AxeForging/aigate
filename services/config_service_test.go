@@ -198,6 +198,46 @@ func TestInitDefaultConfig_TildePrefixes(t *testing.T) {
 	}
 }
 
+func TestMerge_AllowedPaths(t *testing.T) {
+	svc := NewConfigService()
+	global := &domain.Config{
+		AllowedPaths: []string{"~/.cache", "~/.config"},
+	}
+	project := &domain.Config{
+		AllowedPaths: []string{"~/.cache", "../shared-lib"}, // ~/.cache is duplicate
+	}
+
+	merged := svc.Merge(global, project)
+
+	if len(merged.AllowedPaths) != 3 {
+		t.Errorf("AllowedPaths len = %d, want 3 (~/.cache, ~/.config, ../shared-lib)", len(merged.AllowedPaths))
+	}
+	if len(global.AllowedPaths) != 2 {
+		t.Error("Merge should not mutate the global config")
+	}
+}
+
+func TestInitDefaultConfig_AllowedPaths(t *testing.T) {
+	svc := NewConfigService()
+	cfg := svc.InitDefaultConfig()
+
+	if len(cfg.AllowedPaths) == 0 {
+		t.Fatal("default config should enable scope mode with AllowedPaths entries")
+	}
+	for _, want := range []string{"~/.cache", "~/.config", "~/.claude", "~/.claude.json"} {
+		found := false
+		for _, got := range cfg.AllowedPaths {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("AllowedPaths missing %q", want)
+		}
+	}
+}
+
 func TestInitDefaultConfig_SubcommandExamples(t *testing.T) {
 	svc := NewConfigService()
 	cfg := svc.InitDefaultConfig()

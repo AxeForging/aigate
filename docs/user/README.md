@@ -141,17 +141,21 @@ aigate deny exec "kubectl delete" "kubectl create" "docker rm"
 
 # Restrict network (only allow specific domains)
 aigate deny net --except api.anthropic.com --except api.openai.com
+
+# Narrow the filesystem scope (remove an allowed path; empty list = scope off)
+aigate deny path ~/experiments
 ```
 
 ### allow
 
-Remove restrictions:
+Remove restrictions / widen the filesystem scope:
 
 ```sh
 aigate allow read .env          # Remove .env from deny list
 aigate allow exec curl          # Allow curl again
 aigate allow exec "kubectl delete"  # Allow kubectl delete again
 aigate allow net example.com    # Add allowed domain
+aigate allow path ~/experiments # Add a path to the filesystem scope
 ```
 
 ### run
@@ -163,6 +167,7 @@ aigate run -- claude                       # Claude Code
 aigate run -- cursor                       # Cursor AI
 aigate run -- aider --model claude-3       # Aider
 aigate run -- echo "test"                  # Any command
+aigate run --allow-path ~/notes -- claude  # Session-only scope addition
 ```
 
 ### status
@@ -175,7 +180,10 @@ aigate status
 
 ### doctor
 
-Check sandbox prerequisites and show which isolation mode will be active:
+Check your setup (config, OS accounts, sandbox tooling) and show which
+isolation mode will be active. Ends with a verdict — `READY`, `DEGRADED`, or
+`BLOCKED` — plus copy-pasteable next steps, and exits non-zero when the
+sandbox cannot run so scripts/CI can gate on it:
 
 ```sh
 aigate doctor
@@ -183,13 +191,22 @@ aigate doctor
 
 Example output:
 ```
-  ok    bwrap            v0.10.0  — sandbox isolation (mount/pid/user namespaces)
-  ok    slirp4netns      v1.3.1   — network filtering (allow_net rules)
-  ok    ip6tables                 — IPv6 egress filtering (optional)
-  ok    setfacl          v2.3.2   — persistent ACLs
+aigate doctor — environment checks (linux/amd64)
+
+Setup
+  ok    config           ~/.aigate/config.yaml
+          15 deny_read, 11 deny_exec, 5 allow_net, 6 allowed_paths (scope ON)
+  ok    os accounts      group "ai-agents" and user "ai-runner" exist
+
+Tools
+  ok    bwrap            v0.10.0 (/usr/bin/bwrap)
+  ok    slirp4netns      v1.3.1 (/usr/bin/slirp4netns)
   ok    user namespaces  enabled
 
-Isolation mode: bwrap + slirp4netns (full isolation)
+Isolation mode:
+  bwrap + slirp4netns  (full isolation)
+
+Verdict: READY — full isolation available. Try: aigate run -- claude
 ```
 
 ### serve
@@ -254,6 +271,13 @@ allow_net:
   - "api.github.com"
   - "registry.npmjs.org"
   - "proxy.golang.org"
+allowed_paths:
+  - "~/.cache"
+  - "~/.config"
+  - "~/.local"
+  - "~/.claude"
+  - "~/.claude.json"
+  - "~/.npm"
 resource_limits:
   max_memory: "4G"
   max_cpu_percent: 80
@@ -331,6 +355,42 @@ mask_stdout:
 `show_prefix: N` preserves the first N bytes so you can identify which secret was present without exposing the value.
 
 > **Note:** Masking is line-buffered. Secrets spanning chunk boundaries on the same line are still caught. Binary output streams should not use `mask_stdout`.
+
+### Filesystem Scope (allowed_paths)
+
+When `allowed_paths` is non-empty, **scope mode** is on. Inside the sandbox:
+
+- The **working directory** is always fully accessible (read + write).
+- Each listed path is fully accessible. Entries support `~/` expansion,
+  absolute paths, and workdir-relative paths — same as `deny_read`.
+- **Everything else in `$HOME` is hidden.** Non-scoped files are invisible:
+  reads fail with "No such file", directory listings don't leak names, and
+  writes land in an ephemeral overlay that is discarded when the session ends.
+- System paths outside `$HOME` (`/usr`, `/etc`, ...) stay readable (anything
+  else would break running programs) but read-only.
+- `deny_read` / `deny_exec` always win, even inside allowed paths.
+
+`aigate init` enables scope mode by default with the config/cache dirs common
+agent tools need (`~/.cache`, `~/.config`, `~/.local`, `~/.claude`,
+`~/.claude.json`, `~/.npm`), so `aigate run -- claude` works out of the box
+while the rest of your home stays invisible.
+
+Manage the scope:
+
+```sh
+aigate allow path ~/experiments            # persist a new scope path
+aigate deny path ~/experiments             # remove it (empty list = scope off)
+aigate run --allow-path ~/notes -- claude  # one session only
+```
+
+Inside the sandbox, `~/.aigate-scope-README` explains the active scope and
+`/tmp/.aigate-policy` lists the full policy, so agents understand why paths
+are missing instead of chasing phantom errors.
+
+> **Caveat:** running `aigate run` from `$HOME` itself makes the scope
+> unenforceable (the working directory is always accessible). aigate prints a
+> loud warning when this happens — `cd` into a project directory to get
+> enforcement.
 
 ### Project Config (.aigate.yaml)
 

@@ -7,6 +7,7 @@ const (
 	RuleTypeRead RuleType = "read"
 	RuleTypeExec RuleType = "exec"
 	RuleTypeNet  RuleType = "net"
+	RuleTypePath RuleType = "path"
 )
 
 // Rule represents a single sandbox restriction.
@@ -38,12 +39,18 @@ type MaskStdout struct {
 }
 
 // Config represents the aigate configuration file.
+// AllowedPaths, when non-empty, activates scope mode: inside the sandbox only
+// the working directory and the listed paths are accessible (read + write)
+// under $HOME — everything else in $HOME is hidden entirely. System paths
+// outside $HOME stay read-only (required to execute anything). Empty means
+// legacy behavior (home fully accessible).
 type Config struct {
 	Group          string         `yaml:"group"`
 	User           string         `yaml:"user"`
 	DenyRead       []string       `yaml:"deny_read"`
 	DenyExec       []string       `yaml:"deny_exec"`
 	AllowNet       []string       `yaml:"allow_net"`
+	AllowedPaths   []string       `yaml:"allowed_paths"`
 	ResourceLimits ResourceLimits `yaml:"resource_limits"`
 	MaskStdout     MaskStdout     `yaml:"mask_stdout"`
 }

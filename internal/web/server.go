@@ -97,9 +97,10 @@ type overview struct {
 }
 
 type rulesOverview struct {
-	DenyRead []string `json:"deny_read"`
-	DenyExec []string `json:"deny_exec"`
-	AllowNet []string `json:"allow_net"`
+	DenyRead     []string `json:"deny_read"`
+	DenyExec     []string `json:"deny_exec"`
+	AllowNet     []string `json:"allow_net"`
+	AllowedPaths []string `json:"allowed_paths"`
 }
 
 type countersOverview struct {
@@ -117,9 +118,10 @@ func (s *Server) buildOverview() overview {
 		ConfigPath: cfgPath,
 		AuditPath:  auditPath,
 		Rules: rulesOverview{
-			DenyRead: []string{},
-			DenyExec: []string{},
-			AllowNet: []string{},
+			DenyRead:     []string{},
+			DenyExec:     []string{},
+			AllowNet:     []string{},
+			AllowedPaths: []string{},
 		},
 		Counters: countersOverview{
 			ByRule:   map[string]int{"deny_read": 0, "deny_exec": 0, "allow_net": 0},
@@ -170,8 +172,9 @@ func (s *Server) buildOverview() overview {
 
 func rulesFromConfig(cfg domain.Config) rulesOverview {
 	return rulesOverview{
-		DenyRead: append([]string(nil), cfg.DenyRead...),
-		DenyExec: append([]string(nil), cfg.DenyExec...),
-		AllowNet: append([]string(nil), cfg.AllowNet...),
+		DenyRead:     append([]string(nil), cfg.DenyRead...),
+		DenyExec:     append([]string(nil), cfg.DenyExec...),
+		AllowNet:     append([]string(nil), cfg.AllowNet...),
+		AllowedPaths: append([]string(nil), cfg.AllowedPaths...),
 	}
 }

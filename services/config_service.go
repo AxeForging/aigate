@@ -102,6 +102,9 @@ func (s *ConfigService) Merge(global, project *domain.Config) *domain.Config {
 	if len(project.AllowNet) > 0 {
 		merged.AllowNet = appendUnique(merged.AllowNet, project.AllowNet)
 	}
+	if len(project.AllowedPaths) > 0 {
+		merged.AllowedPaths = appendUnique(merged.AllowedPaths, project.AllowedPaths)
+	}
 	if project.ResourceLimits.MaxMemory != "" {
 		merged.ResourceLimits.MaxMemory = project.ResourceLimits.MaxMemory
 	}
@@ -160,6 +163,17 @@ func (s *ConfigService) InitDefaultConfig() *domain.Config {
 			"api.github.com",
 			"registry.npmjs.org",
 			"proxy.golang.org",
+		},
+		// Scope: the working directory is always accessible; these cover the
+		// config/cache dirs common agent tools need. Everything else in $HOME
+		// is hidden (unreadable and unwritable) inside the sandbox.
+		AllowedPaths: []string{
+			"~/.cache",
+			"~/.config",
+			"~/.local",
+			"~/.claude",
+			"~/.claude.json",
+			"~/.npm",
 		},
 		ResourceLimits: domain.ResourceLimits{
 			MaxMemory:     "4G",

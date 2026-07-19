@@ -44,6 +44,23 @@ NETWORK RESTRICTIONS (deny net)
       # Block all outbound except listed domains
   aigate allow net api.github.com          # Remove a domain from allow list
 
+FILESYSTEM SCOPE (allowed_paths)
+  When allowed_paths is non-empty, scope mode is ON: inside the sandbox only
+  the working directory and the listed paths are accessible (read AND write).
+  The rest of $HOME is hidden — non-scoped files are invisible, and writes to
+  them land in an ephemeral overlay that is discarded. System paths outside
+  $HOME stay read-only. deny_read/deny_exec rules always win over the scope.
+
+  aigate allow path ~/experiments          # Add a path to the scope (persists)
+  aigate deny path ~/experiments           # Remove it (empty list = scope off)
+  aigate run --allow-path ~/notes -- claude  # Extra scope path, one session only
+
+  'aigate init' enables scope mode by default with the dirs agent tools need:
+  ~/.cache ~/.config ~/.local ~/.claude ~/.claude.json ~/.npm
+
+  Caveat: running from $HOME itself disables enforcement (the working
+  directory is always accessible) — aigate warns loudly when this happens.
+
 RUNNING SANDBOXED
   aigate run -- claude                     # Run Claude in sandbox
   aigate run -- aider                      # Run any AI tool
@@ -90,6 +107,13 @@ CONFIGURATION
       - api.github.com
       - registry.npmjs.org
       - proxy.golang.org
+    allowed_paths:
+      - ~/.cache
+      - ~/.config
+      - ~/.local
+      - ~/.claude
+      - ~/.claude.json
+      - ~/.npm
     resource_limits:
       max_memory: 4G
       max_cpu_percent: 80
@@ -157,7 +181,12 @@ WHAT THE AI AGENT SEES INSIDE THE SANDBOX
     [aigate] deny_read: .env, secrets/, *.pem
     [aigate] deny_exec: curl, wget, ssh
     [aigate] allow_net: api.anthropic.com (all other outbound connections will be blocked)
+    [aigate] allowed_paths: ~/.cache, ~/.config (plus the working directory; the rest of $HOME is hidden)
     [aigate] mask_stdout: openai, anthropic, aws_key, aws_secret, github, bearer
+
+  With scope mode on, non-scoped home files are invisible (plain "No such
+  file"), and ~/.aigate-scope-README inside the sandbox explains the scope
+  and points to /tmp/.aigate-policy for the full policy.
 
   Denied files contain a marker instead of their content:
     [aigate] access denied: this file is protected by sandbox policy. See /tmp/.aigate-policy for all active restrictions.

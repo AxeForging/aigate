@@ -71,6 +71,35 @@ func DetectPlatformWithExecutor(exec Executor) Platform {
 	return newPlatform(exec)
 }
 
+// resolveScopedPaths resolves allowed_paths entries to existing absolute
+// paths. Non-existent paths are skipped (there is nothing to bind/allow yet);
+// the same ~/, absolute, and workdir-relative forms as deny_read are
+// supported.
+func resolveScopedPaths(profile domain.SandboxProfile) []string {
+	resolved, err := resolvePatterns(profile.Config.AllowedPaths, profile.WorkDir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, p := range resolved {
+		if _, statErr := os.Stat(p); statErr != nil {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// underAny reports whether path equals or is contained in any of the roots.
+func underAny(path string, roots []string) bool {
+	for _, root := range roots {
+		if path == root || strings.HasPrefix(path, root+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 // resolvePatterns expands glob patterns relative to workDir into absolute paths.
 // Patterns starting with ~/ are expanded to the user's home directory.
 func resolvePatterns(patterns []string, workDir string) ([]string, error) {

@@ -39,3 +39,8 @@ var dryRunFlag = cli.BoolFlag{
 	Name:  "dry-run",
 	Usage: "Preview changes without applying them",
 }
+
+var allowPathFlag = cli.StringSliceFlag{
+	Name:  "allow-path, p",
+	Usage: "Session-only scope path (repeatable); with scope active, only the workdir and allowed paths are accessible",
+}

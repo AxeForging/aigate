@@ -1,5 +1,7 @@
 const state = {
   refreshTimer: null,
+  syncTimer: null,
+  lastSync: null,
   events: [],
   filters: {
     query: '',
@@ -8,6 +10,8 @@ const state = {
     source: '',
   },
 };
+
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const labels = {
   deny_read: 'protected reads',
@@ -31,6 +35,42 @@ function text(selector, value) {
       { transform: 'translateY(0)', opacity: 1 },
     ], { duration: 260, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' });
   }
+}
+
+// countUp tweens a numeric field from its current value to the target so the
+// hero counter feels alive instead of snapping.
+function countUp(selector, target) {
+  const el = document.querySelector(selector);
+  if (!el) return;
+  const from = parseInt(el.textContent.replace(/\D/g, ''), 10) || 0;
+  const to = Number(target) || 0;
+  if (from === to) return;
+  if (reducedMotion) {
+    el.textContent = to;
+    return;
+  }
+  const start = performance.now();
+  const duration = Math.min(900, 240 + Math.abs(to - from) * 40);
+  const ease = (t) => 1 - Math.pow(1 - t, 3);
+  const frame = (now) => {
+    const t = Math.min(1, (now - start) / duration);
+    el.textContent = Math.round(from + (to - from) * ease(t));
+    if (t < 1) requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+}
+
+function markSynced() {
+  state.lastSync = Date.now();
+  renderSyncNote();
+}
+
+function renderSyncNote() {
+  const el = document.querySelector('[data-field="sync-note"]');
+  if (!el || !state.lastSync) return;
+  const seconds = Math.max(0, Math.round((Date.now() - state.lastSync) / 1000));
+  el.textContent = seconds < 2 ? 'synced just now' : `synced ${seconds}s ago`;
+  el.classList.toggle('is-stale', seconds > 15);
 }
 
 function list(selector, items, empty) {
@@ -57,6 +97,42 @@ function renderBars(counters) {
           <strong>${value}</strong>
         </div>
         <div class="bar-track"><div class="bar-fill" style="--value:${width}%; --bar-color:${colors[key] || 'oklch(68% 0.21 41)'}"></div></div>
+      </div>
+    `;
+  }).join('');
+}
+
+// renderSpark draws a mini bar chart of daily activity (blocked vs runs) for
+// the last 14 days from the event feed.
+function renderSpark(events) {
+  const el = document.querySelector('[data-field="spark"]');
+  if (!el) return;
+  const days = [];
+  const byDay = new Map();
+  for (let i = 13; i >= 0; i -= 1) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    days.push(key);
+    byDay.set(key, { blocked: 0, runs: 0 });
+  }
+  (events || []).forEach((event) => {
+    const key = String(event.time || '').slice(0, 10);
+    const bucket = byDay.get(key);
+    if (!bucket) return;
+    if (event.kind === 'blocked') bucket.blocked += 1;
+    else if (event.kind === 'run_started') bucket.runs += 1;
+  });
+  const max = Math.max(1, ...days.map((key) => byDay.get(key).blocked + byDay.get(key).runs));
+  el.innerHTML = days.map((key, index) => {
+    const { blocked, runs } = byDay.get(key);
+    const blockedPct = Math.round((blocked / max) * 100);
+    const runsPct = Math.round((runs / max) * 100);
+    const label = `${key}: ${blocked} blocked, ${runs} runs`;
+    return `
+      <div class="spark-col" style="animation-delay:${index * 26}ms" title="${escapeHtml(label)}">
+        <div class="spark-runs" style="height:${Math.max(runs ? 6 : 0, runsPct)}%"></div>
+        <div class="spark-blocked" style="height:${Math.max(blocked ? 6 : 0, blockedPct)}%"></div>
       </div>
     `;
   }).join('');
@@ -144,23 +220,33 @@ function renderSourceOptions(events) {
 }
 
 async function refresh() {
-  const res = await fetch('/api/overview', { headers: { accept: 'application/json' } });
-  if (!res.ok) return;
-  const data = await res.json();
-  text('[data-field="blocked-total"]', data.counters.blocked_total);
-  text('[data-field="blocked-today"]', data.counters.blocked_today);
-  text('[data-field="runs-total"]', data.counters.runs_total);
-  text('[data-field="rule-read"]', data.rules.deny_read.length);
-  text('[data-field="rule-exec"]', data.rules.deny_exec.length);
-  text('[data-field="rule-net"]', data.rules.allow_net.length);
-  list('[data-list="deny-read"]', data.rules.deny_read, 'none');
-  list('[data-list="deny-exec"]', data.rules.deny_exec, 'none');
-  list('[data-list="allow-net"]', data.rules.allow_net, 'all outbound allowed');
-  renderBars(data.counters);
-  renderLatest(data.last_blocked);
-  state.events = data.events || [];
-  renderSourceOptions(state.events);
-  applyFilters();
+  const button = document.querySelector('[data-action="refresh"]');
+  button?.classList.add('is-syncing');
+  try {
+    const res = await fetch('/api/overview', { headers: { accept: 'application/json' } });
+    if (!res.ok) return;
+    const data = await res.json();
+    countUp('[data-field="blocked-total"]', data.counters.blocked_total);
+    countUp('[data-field="blocked-today"]', data.counters.blocked_today);
+    countUp('[data-field="runs-total"]', data.counters.runs_total);
+    text('[data-field="rule-read"]', data.rules.deny_read.length);
+    text('[data-field="rule-exec"]', data.rules.deny_exec.length);
+    text('[data-field="rule-net"]', data.rules.allow_net.length);
+    text('[data-field="rule-scope"]', (data.rules.allowed_paths || []).length);
+    list('[data-list="deny-read"]', data.rules.deny_read, 'none');
+    list('[data-list="deny-exec"]', data.rules.deny_exec, 'none');
+    list('[data-list="allow-net"]', data.rules.allow_net, 'all outbound allowed');
+    list('[data-list="allowed-paths"]', data.rules.allowed_paths, 'scope off — $HOME fully accessible');
+    renderBars(data.counters);
+    renderLatest(data.last_blocked);
+    state.events = data.events || [];
+    renderSpark(state.events);
+    renderSourceOptions(state.events);
+    applyFilters();
+    markSynced();
+  } finally {
+    button?.classList.remove('is-syncing');
+  }
 }
 
 function formatTime(value) {
@@ -207,3 +293,4 @@ renderBars({
 });
 refresh();
 state.refreshTimer = setInterval(refresh, 5000);
+state.syncTimer = setInterval(renderSyncNote, 1000);

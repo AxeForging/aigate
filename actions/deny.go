@@ -53,6 +53,39 @@ func (a *DenyAction) ExecuteNet(c *cli.Context) error {
 	return a.addDeny(domain.RuleTypeNet, domains, c.Bool("dry-run"))
 }
 
+// ExecutePath removes paths from the allowed_paths session scope. Note the
+// inverse of the deny rules: "deny path" REMOVES an allowlist entry
+// (narrowing what the sandbox may access).
+func (a *DenyAction) ExecutePath(c *cli.Context) error {
+	if c.Bool("verbose") {
+		helpers.SetupLogger("debug")
+	}
+	paths := c.Args()
+	if len(paths) == 0 {
+		return fmt.Errorf("usage: aigate deny path <path> [path...]")
+	}
+
+	cfg, err := a.configSvc.LoadGlobal()
+	if err != nil {
+		return fmt.Errorf("%w", helpers.ErrNotInitialized)
+	}
+	if err := a.ruleSvc.RemoveAllowedPaths(cfg, paths); err != nil {
+		return err
+	}
+	if err := a.configSvc.SaveGlobal(cfg); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	fmt.Println("Removed from allowed_paths:")
+	for _, p := range paths {
+		fmt.Printf("  - %s\n", p)
+	}
+	if len(cfg.AllowedPaths) == 0 {
+		fmt.Println("allowed_paths is now empty — scope mode is OFF ($HOME fully accessible in the sandbox).")
+	}
+	return nil
+}
+
 func (a *DenyAction) addDeny(ruleType domain.RuleType, patterns []string, dryRun bool) error {
 	cfg, err := a.configSvc.LoadGlobal()
 	if err != nil {
