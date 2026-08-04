@@ -235,8 +235,8 @@
         <h1>A trust boundary the AI can't argue its way out of.</h1>
         <p class="lede">
           Claude Code, Cursor, Copilot, and Aider all rely on application-level
-          permission systems &mdash; ignore files, allow/deny lists &mdash; that
-          can be bypassed. aigate moves that boundary into the OS kernel: POSIX
+          permission systems (ignore files, allow/deny lists) that can be
+          bypassed. aigate moves that boundary into the OS kernel: POSIX
           ACLs, Linux namespaces, and egress allowlists physically block what the
           agent can read, execute, and reach on the network, regardless of what
           the model decides to try.
@@ -245,7 +245,7 @@
           <a class="axe-button glow-accent" href="#install">Get started</a>
           <a class="btn-ghost" href="https://github.com/AxeForging/aigate">Source on GitHub</a>
         </div>
-        <p class="trust-line">The most-starred tool in the AxeForge portfolio &mdash; <a href="https://github.com/AxeForging/aigate/stargazers">see it on GitHub</a>.</p>
+        <p class="trust-line">The most-starred tool in the AxeForge portfolio. <a href="https://github.com/AxeForging/aigate/stargazers">See it on GitHub</a>.</p>
       </div>
 
       <div>
@@ -277,7 +277,7 @@
       <div class="feature-grid">
         <div class="glass-card feature-card">
           <div class="tone-row"><span class="feed-tone feed-tone-critical"></span><h3>File isolation</h3></div>
-          <p>Persistent POSIX ACLs (<code>setfacl</code>) on Linux, extended ACLs (<code>chmod +a</code>) on macOS, deny read access at rest. At <code>run</code> time, mount namespaces overmount denied directories with empty tmpfs and files with <code>/dev/null</code> &mdash; two layers of defense-in-depth.</p>
+          <p>Persistent POSIX ACLs (<code>setfacl</code>) on Linux, extended ACLs (<code>chmod +a</code>) on macOS, deny read access at rest. At <code>run</code> time, mount namespaces overmount denied directories with empty tmpfs and files with <code>/dev/null</code>: two layers of defense-in-depth.</p>
         </div>
         <div class="glass-card feature-card">
           <div class="tone-row"><span class="feed-tone feed-tone-warn"></span><h3>Filesystem scope</h3></div>
@@ -300,7 +300,7 @@
       <div class="section-head">
         <div class="kicker-sm">Cross-platform</div>
         <h2 class="section-title">Real isolation on every supported OS</h2>
-        <p class="section-sub">aigate prefers <code>bwrap</code> when it's installed and falls back cleanly when it isn't &mdash; run <code>aigate doctor</code> to see which mode is active.</p>
+        <p class="section-sub">aigate prefers <code>bwrap</code> when it's installed and falls back cleanly when it isn't; run <code>aigate doctor</code> to see which mode is active.</p>
       </div>
       <div class="table-scroll">
       <table>
@@ -329,12 +329,12 @@
         <div class="glass-card guide-step">
           <div class="num">02</div>
           <h3><code>init</code></h3>
-          <p>Writes <code>~/.aigate/config.yaml</code> with sensible defaults &mdash; <code>.env</code>, <code>secrets/</code>, <code>~/.ssh/</code>, and friends denied out of the box.</p>
+          <p>Writes <code>~/.aigate/config.yaml</code> with sensible defaults: <code>.env</code>, <code>secrets/</code>, <code>~/.ssh/</code>, and friends, denied out of the box.</p>
         </div>
         <div class="glass-card guide-step">
           <div class="num">03</div>
           <h3><code>deny</code> / <code>allow</code></h3>
-          <p>Add or remove file, exec, and network rules &mdash; globally or per-project via <code>.aigate.yaml</code>, which extends the global config.</p>
+          <p>Add or remove file, exec, and network rules, globally or per-project, via <code>.aigate.yaml</code>, which extends the global config.</p>
         </div>
         <div class="glass-card guide-step">
           <div class="num">04</div>
@@ -344,7 +344,7 @@
         <div class="glass-card guide-step">
           <div class="num">05</div>
           <h3><code>doctor</code></h3>
-          <p>Checks <code>bwrap</code>/<code>slirp4netns</code>/namespaces and prints a <code>READY</code>/<code>DEGRADED</code>/<code>BLOCKED</code> verdict &mdash; exits non-zero so CI can gate on it.</p>
+          <p>Checks <code>bwrap</code>/<code>slirp4netns</code>/namespaces and prints a <code>READY</code>/<code>DEGRADED</code>/<code>BLOCKED</code> verdict, and exits non-zero so CI can gate on it.</p>
         </div>
       </div>
     </div>
@@ -398,11 +398,11 @@ sudo mv aigate-linux-amd64 /usr/local/bin/aigate</code></pre>
         </div>
         <div class="install-step">
           <span class="n"></span>
-          <p><strong>One-time system setup</strong> &mdash; <code>sudo aigate setup && aigate init</code></p>
+          <p><strong>One-time system setup</strong>: <code>sudo aigate setup && aigate init</code></p>
         </div>
         <div class="install-step">
           <span class="n"></span>
-          <p><strong>Run any AI tool sandboxed</strong> &mdash; <code>aigate run -- claude</code></p>
+          <p><strong>Run any AI tool sandboxed</strong>: <code>aigate run -- claude</code></p>
         </div>
       </div>
       <a class="axe-button" href="https://github.com/AxeForging/aigate/blob/main/docs/user/README.md#install">Full instructions on GitHub</a>
