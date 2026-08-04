@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en" data-flavor="relay">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aigate — OS-level sandbox for AI coding agents</title>
+<meta name="description" content="aigate wraps Claude Code, Cursor, Copilot, and Aider in a kernel-enforced sandbox: POSIX ACLs, Linux namespaces, and egress allowlists that block file reads, command execution, and network calls at the OS level, not the application level. By AxeForge.">
+<meta property="og:title" content="aigate — OS-level sandbox for AI coding agents">
+<meta property="og:description" content="Kernel-enforced file, command, and network isolation for AI coding tools. Like a Python venv, but for AI permissions. Bypassable app-level rules become unbypassable ACLs and namespaces.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://axeforging.github.io/aigate/">
+<meta property="og:image" content="https://axeforging.github.io/aigate/og-image.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="aigate — OS-level sandbox for AI coding agents">
+<meta name="twitter:description" content="Kernel-enforced file, command, and network isolation for Claude Code, Cursor, Copilot, and Aider.">
+<meta name="twitter:image" content="https://axeforging.github.io/aigate/og-image.png">
+<link rel="canonical" href="https://axeforging.github.io/aigate/">
+<link rel="icon" href="./favicon.png" type="image/png">
+<link rel="apple-touch-icon" href="./favicon.png">
+<link rel="stylesheet" href="./axeforge.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "aigate",
+  "applicationCategory": "SecurityApplication",
+  "operatingSystem": "Linux, macOS",
+  "description": "OS-level sandbox for AI coding agents. Kernel-enforced file, command, and network isolation for Claude Code, Cursor, Copilot, Aider, and any AI tool, using POSIX/macOS ACLs, Linux namespaces (bubblewrap), and egress allowlists instead of bypassable application-level permission checks.",
+  "url": "https://axeforging.github.io/aigate/",
+  "author": { "@type": "Organization", "name": "AxeForge", "url": "https://axeforge.io" },
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+<style>
+  /* AxeForge shell + the relay flavor (external tools) -- see branding/README.md.
+     Fonts/components inherited from the kit deliberately -- same pattern as
+     heyra's, rsvp-m5's, and gumshoe's web/index.html, reused here rather than
+     re-derived. */
+
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  a { color: inherit; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 1.5rem; }
+
+  /* ---- Topbar ---- */
+  .topbar {
+    padding: 0;
+    min-height: 68px;
+    border-bottom: 1px solid var(--af-line);
+    background: color-mix(in srgb, var(--af-bg) 88%, transparent);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    position: sticky; top: 0; z-index: 40;
+  }
+  .topbar .wrap { display: flex; align-items: center; justify-content: space-between; min-height: 68px; }
+  .topbar-brand { display: flex; align-items: center; gap: 0.6rem; text-decoration: none; font-weight: 700; }
+  .topbar-brand img { height: 24px; width: 24px; }
+  .topbar-brand .sep { color: var(--af-text-muted); font-weight: 400; margin: 0 0.15rem; }
+  .topbar-brand .forge { color: var(--af-accent); }
+  .topbar-nav { display: flex; align-items: center; gap: 1.5rem; font-size: 0.9rem; }
+  .topbar-nav a.navlink { color: var(--af-text-muted); text-decoration: none; }
+  .topbar-nav a.navlink:hover { color: var(--af-text); }
+
+  /* ---- Hero: asymmetric two-column ---- */
+  .hero {
+    background-image: radial-gradient(circle, var(--af-line) 1px, transparent 1px);
+    background-size: 32px 32px;
+    background-position: -8px -8px;
+    border-bottom: 1px solid var(--af-line);
+  }
+  .hero .wrap {
+    display: grid;
+    grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
+    gap: 3rem;
+    align-items: center;
+    padding-top: 4.5rem;
+    padding-bottom: 4.5rem;
+  }
+  .kicker {
+    font-family: var(--af-font-mono);
+    font-size: 0.8rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--af-accent);
+    margin-bottom: 1rem;
+  }
+  .hero h1 {
+    font-size: clamp(2.1rem, 1.4rem + 2.6vw, 3.1rem);
+    line-height: 1.08;
+    margin: 0 0 1.1rem;
+    letter-spacing: -0.01em;
+  }
+  .hero p.lede {
+    color: var(--af-text-muted);
+    font-size: 1.08rem;
+    line-height: 1.65;
+    max-width: 46ch;
+    margin: 0 0 1.75rem;
+  }
+  .hero .ctas { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
+  .btn-ghost {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    padding: 0.75rem 1.4rem; border-radius: var(--af-radius);
+    border: 1px solid var(--af-line); color: var(--af-text);
+    text-decoration: none; font-weight: 600; font-size: 1rem;
+    transition: border-color 0.15s ease;
+  }
+  .btn-ghost:hover { border-color: color-mix(in srgb, var(--af-accent) 50%, transparent); }
+  .trust-line {
+    margin: 1.1rem 0 0;
+    font-size: 0.85rem;
+    color: var(--af-text-muted);
+    font-family: var(--af-font-mono);
+  }
+  .trust-line a { color: var(--af-accent); text-decoration: none; }
+  .trust-line a:hover { text-decoration: underline; }
+
+  /* ---- Live audit-log demo ---- */
+  .feed-caption { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; font-size: 0.8rem; color: var(--af-text-muted); }
+  .pulse-dot { position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--af-accent); flex: none; }
+  .pulse-dot::after {
+    content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--af-accent);
+    animation: pulse 2s ease-out infinite;
+  }
+  @keyframes pulse { 0% { opacity: 0.6; transform: scale(1); } 100% { opacity: 0; transform: scale(2.8); } }
+  #feed-window { box-shadow: 0 30px 60px -20px rgb(0 0 0 / 0.6); max-width: 100%; }
+  #feed-banner { padding: 0.85rem 1rem 0.4rem; font-family: var(--af-font-mono); font-size: 0.78rem; color: var(--af-text-muted); border-bottom: 1px solid var(--af-line); }
+  #feed-banner div { padding: 0.1rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #feed-body { min-height: 11rem; max-height: 11rem; padding: 0.6rem 1rem 0.85rem; overflow: hidden; font-family: var(--af-font-mono); font-size: 0.82rem; }
+  .feed-line {
+    display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 0.6rem; align-items: baseline;
+    padding: 0.3rem 0; color: var(--af-text-muted);
+    animation: feed-in 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .feed-line .title { overflow-wrap: break-word; }
+  @keyframes feed-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+  .feed-line .sev { text-transform: uppercase; font-size: 0.72rem; }
+  .feed-line .title { color: var(--af-text); }
+  .feed-line .who { color: var(--af-text-muted); opacity: 0.75; text-align: right; }
+  .feed-tone { width: 6px; height: 6px; border-radius: 50%; align-self: center; }
+  .feed-tone-info { background: #22d3ee; }
+  .feed-tone-warn { background: #ffb000; }
+  .feed-tone-critical { background: var(--af-accent); box-shadow: 0 0 8px color-mix(in srgb, var(--af-accent) 60%, transparent); }
+  @media (prefers-reduced-motion: reduce) {
+    .feed-line { animation: none; }
+    .pulse-dot::after { animation: none; opacity: 0; }
+  }
+
+  /* ---- Sections ---- */
+  section { padding: 4rem 0; border-top: 1px solid var(--af-line); }
+  .section-head { margin-bottom: 2.25rem; max-width: 60ch; }
+  .kicker-sm { font-family: var(--af-font-mono); font-size: 0.78rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--af-accent); margin-bottom: 0.5rem; }
+  .section-title { font-size: clamp(1.5rem, 1.3rem + 0.8vw, 1.9rem); margin: 0 0 0.6rem; letter-spacing: -0.005em; }
+  .section-sub { color: var(--af-text-muted); line-height: 1.6; margin: 0; }
+
+  /* ---- Feature grid ---- */
+  .feature-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
+  .feature-card { padding: 1.25rem 1.4rem; }
+  .feature-card .tone-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.65rem; }
+  .feature-card h3 { margin: 0; font-size: 1.02rem; }
+  .feature-card p { margin: 0; color: var(--af-text-muted); font-size: 0.92rem; line-height: 1.55; }
+
+  /* ---- Guide: asymmetric numbered flow ---- */
+  .guide-flow { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.25rem; counter-reset: step; }
+  .guide-step { padding: 1.5rem; position: relative; }
+  .guide-step .num { font-family: var(--af-font-mono); font-size: 0.85rem; color: var(--af-accent); margin-bottom: 0.75rem; }
+  .guide-step h3 { margin: 0 0 0.5rem; font-size: 1.05rem; }
+  .guide-step p { margin: 0; color: var(--af-text-muted); font-size: 0.93rem; line-height: 1.6; }
+  .guide-step code { font-family: var(--af-font-mono); background: var(--af-surface); padding: 0.15em 0.45em; border-radius: 4px; font-size: 0.85em; }
+
+  /* ---- Use cases ---- */
+  .usecase-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 1rem; }
+  .usecase-card { padding: 1.25rem 1.4rem; }
+  .usecase-card h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+  .usecase-card p { margin: 0; color: var(--af-text-muted); font-size: 0.9rem; line-height: 1.55; }
+  .usecase-card code { font-family: var(--af-font-mono); background: var(--af-surface); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.82em; display: inline-block; margin-top: 0.4rem; overflow-wrap: anywhere; }
+
+  /* ---- Isolation table ---- */
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 0.65rem 0.9rem; border-bottom: 1px solid var(--af-line); }
+  th { color: var(--af-text-muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; font-family: var(--af-font-mono); }
+  code { font-family: var(--af-font-mono); background: var(--af-surface); padding: 0.15em 0.45em; border-radius: 4px; font-size: 0.9em; }
+
+  /* ---- Install ---- */
+  .install-steps { counter-reset: install; display: flex; flex-direction: column; gap: 0.9rem; max-width: 56ch; margin: 0 0 1.75rem; }
+  .install-step { display: flex; gap: 0.9rem; align-items: flex-start; }
+  .install-step > div { min-width: 0; flex: 1 1 auto; }
+  .install-step .n {
+    counter-increment: install; flex: none; width: 1.75rem; height: 1.75rem; border-radius: 50%;
+    border: 1px solid var(--af-line); display: flex; align-items: center; justify-content: center;
+    font-family: var(--af-font-mono); font-size: 0.8rem; color: var(--af-accent);
+  }
+  .install-step .n::before { content: counter(install); }
+  .install-step p { margin: 0; color: var(--af-text-muted); line-height: 1.55; }
+  .install-step p strong { color: var(--af-text); }
+  .install-step pre { margin: 0.5rem 0 0; overflow-x: auto; }
+
+  footer { padding: 3rem 0 4rem; text-align: center; color: var(--af-text-muted); font-size: 0.9rem; }
+  footer a { text-decoration: underline; text-decoration-color: var(--af-line); text-underline-offset: 3px; }
+
+  @media (max-width: 820px) {
+    .hero .wrap { grid-template-columns: 1fr; padding-top: 3rem; padding-bottom: 3rem; }
+    .topbar-nav a[href^="#"] { display: none; }
+    .topbar-nav { gap: 0.75rem; }
+  }
+  @media (max-width: 480px) {
+    .topbar .wrap { flex-wrap: wrap; row-gap: 0.6rem; padding-top: 0.75rem; padding-bottom: 0.75rem; min-height: 0; }
+    .topbar { min-height: 0; }
+    .feed-line { grid-template-columns: auto auto minmax(0, 1fr); }
+    .feed-line .who { display: none; }
+  }
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap">
+      <a class="topbar-brand" href="https://tools.axeforge.io">
+        <img src="./axeforge-icon.png" alt="">
+        <span>Axe<span class="forge">Forge</span><span class="sep">/</span>aigate</span>
+      </a>
+      <nav class="topbar-nav">
+        <a class="navlink" href="#isolation">Isolation</a>
+        <a class="navlink" href="#platforms">Platforms</a>
+        <a class="navlink" href="#usecases">Use cases</a>
+        <a class="axe-button" href="https://github.com/AxeForging/aigate">View on GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="wrap">
+      <div>
+        <div class="kicker">OS-level sandbox for AI coding agents</div>
+        <h1>A trust boundary the AI can't argue its way out of.</h1>
+        <p class="lede">
+          Claude Code, Cursor, Copilot, and Aider all rely on application-level
+          permission systems &mdash; ignore files, allow/deny lists &mdash; that
+          can be bypassed. aigate moves that boundary into the OS kernel: POSIX
+          ACLs, Linux namespaces, and egress allowlists physically block what the
+          agent can read, execute, and reach on the network, regardless of what
+          the model decides to try.
+        </p>
+        <div class="ctas">
+          <a class="axe-button glow-accent" href="#install">Get started</a>
+          <a class="btn-ghost" href="https://github.com/AxeForging/aigate">Source on GitHub</a>
+        </div>
+        <p class="trust-line">The most-starred tool in the AxeForge portfolio &mdash; <a href="https://github.com/AxeForging/aigate/stargazers">see it on GitHub</a>.</p>
+      </div>
+
+      <div>
+        <div class="feed-caption"><span class="pulse-dot"></span> Live demo (simulated output, not a real sandbox)</div>
+        <div class="terminal-window" id="feed-window">
+          <div class="terminal-header">
+            <span class="dot dot-red"></span><span class="dot dot-yellow"></span><span class="dot dot-green"></span>
+            <span style="margin-left: 0.5rem; color: var(--af-text-muted);">aigate run -- claude</span>
+          </div>
+          <div id="feed-banner">
+            <div>[aigate] sandbox active</div>
+            <div>[aigate] deny_read: .env, secrets/, ~/.ssh/, *.pem</div>
+            <div>[aigate] deny_exec: curl, wget, ssh, scp</div>
+            <div>[aigate] allow_net: api.anthropic.com, api.github.com</div>
+          </div>
+          <div id="feed-body"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="isolation">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="kicker-sm">How it works</div>
+        <h2 class="section-title">The kernel is the trust boundary, not the app</h2>
+        <p class="section-sub">Four enforcement layers, each backed by an OS primitive the sandboxed process cannot negotiate with.</p>
+      </div>
+      <div class="feature-grid">
+        <div class="glass-card feature-card">
+          <div class="tone-row"><span class="feed-tone feed-tone-critical"></span><h3>File isolation</h3></div>
+          <p>Persistent POSIX ACLs (<code>setfacl</code>) on Linux, extended ACLs (<code>chmod +a</code>) on macOS, deny read access at rest. At <code>run</code> time, mount namespaces overmount denied directories with empty tmpfs and files with <code>/dev/null</code> &mdash; two layers of defense-in-depth.</p>
+        </div>
+        <div class="glass-card feature-card">
+          <div class="tone-row"><span class="feed-tone feed-tone-warn"></span><h3>Filesystem scope</h3></div>
+          <p><code>allowed_paths</code> hides everything in <code>$HOME</code> except the working directory and paths you allow. Non-scoped files are invisible: reads fail, listings don't leak names, writes land in a discarded overlay.</p>
+        </div>
+        <div class="glass-card feature-card">
+          <div class="tone-row"><span class="feed-tone feed-tone-info"></span><h3>Network isolation</h3></div>
+          <p>Bubblewrap's <code>--unshare-net</code> plus <code>slirp4netns</code> and <code>iptables</code>/<code>ip6tables</code> restrict egress to your <code>allow_net</code> allowlist on Linux; Seatbelt <code>network-outbound</code> rules do the same on macOS.</p>
+        </div>
+        <div class="glass-card feature-card">
+          <div class="tone-row"><span class="feed-tone feed-tone-critical"></span><h3>Process isolation</h3></div>
+          <p>User and PID namespaces (<code>--unshare-user --unshare-pid</code>) mean the sandboxed process can't see or signal anything on the host, and needs no real root to set up mounts and networking.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="platforms">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="kicker-sm">Cross-platform</div>
+        <h2 class="section-title">Real isolation on every supported OS</h2>
+        <p class="section-sub">aigate prefers <code>bwrap</code> when it's installed and falls back cleanly when it isn't &mdash; run <code>aigate doctor</code> to see which mode is active.</p>
+      </div>
+      <div class="table-scroll">
+      <table>
+        <tr><th>Layer</th><th>Linux (bwrap)</th><th>Linux (unshare fallback)</th><th>macOS</th></tr>
+        <tr><td>File</td><td>Declarative bind-mount overrides</td><td>Shell-script mount overrides</td><td>Seatbelt <code>file-read*</code> deny rules</td></tr>
+        <tr><td>Network</td><td><code>--unshare-net</code> + <code>slirp4netns</code> + <code>iptables</code></td><td>Nested <code>unshare</code> + <code>slirp4netns</code> + <code>iptables</code></td><td><code>sandbox-exec</code> <code>network-outbound</code> rules</td></tr>
+        <tr><td>Process</td><td><code>--unshare-user --unshare-pid</code>, sandboxed PID 1</td><td><code>unshare --user --map-root-user</code></td><td>Enforced by Sandbox.kext</td></tr>
+        <tr><td>Command exec</td><td><code>mount --bind</code> deny stubs + arg-checking wrappers</td><td>Same bind-mount stubs</td><td><code>(deny process-exec)</code> rules</td></tr>
+      </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="commands">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="kicker-sm">Commands</div>
+        <h2 class="section-title">From zero to sandboxed in five commands</h2>
+      </div>
+      <div class="guide-flow">
+        <div class="glass-card guide-step">
+          <div class="num">01</div>
+          <h3><code>setup</code></h3>
+          <p>One-time, needs <code>sudo</code>. Creates the <code>ai-agents</code> OS group and <code>ai-runner</code> user that ACL rules attach to.</p>
+        </div>
+        <div class="glass-card guide-step">
+          <div class="num">02</div>
+          <h3><code>init</code></h3>
+          <p>Writes <code>~/.aigate/config.yaml</code> with sensible defaults &mdash; <code>.env</code>, <code>secrets/</code>, <code>~/.ssh/</code>, and friends denied out of the box.</p>
+        </div>
+        <div class="glass-card guide-step">
+          <div class="num">03</div>
+          <h3><code>deny</code> / <code>allow</code></h3>
+          <p>Add or remove file, exec, and network rules &mdash; globally or per-project via <code>.aigate.yaml</code>, which extends the global config.</p>
+        </div>
+        <div class="glass-card guide-step">
+          <div class="num">04</div>
+          <h3><code>run</code></h3>
+          <p>Launches any AI tool inside the sandbox and prints exactly which restrictions are active to stderr before it starts.</p>
+        </div>
+        <div class="glass-card guide-step">
+          <div class="num">05</div>
+          <h3><code>doctor</code></h3>
+          <p>Checks <code>bwrap</code>/<code>slirp4netns</code>/namespaces and prints a <code>READY</code>/<code>DEGRADED</code>/<code>BLOCKED</code> verdict &mdash; exits non-zero so CI can gate on it.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="usecases">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="kicker-sm">Use cases</div>
+        <h2 class="section-title">Why people reach for aigate</h2>
+      </div>
+      <div class="usecase-grid">
+        <div class="glass-card usecase-card">
+          <h3>Regulated environments</h3>
+          <p>GDPR/ISO/security teams need a trust boundary that isn't "the model chose not to read the file." ACLs and namespaces don't have that failure mode.</p>
+          <code>sudo aigate setup && aigate init</code>
+        </div>
+        <div class="glass-card usecase-card">
+          <h3>Stop credential exfiltration</h3>
+          <p>Deny read on <code>.env</code>, <code>secrets/</code>, and SSH keys, then mask API keys and tokens that still make it into stdout.</p>
+          <code>aigate deny read .env secrets/ *.pem</code>
+        </div>
+        <div class="glass-card usecase-card">
+          <h3>Lock down egress</h3>
+          <p>An agent that can only resolve the hosts you named can't phone home to anywhere else, curl an attacker's server, or exfiltrate over DNS.</p>
+          <code>aigate deny net --except api.anthropic.com</code>
+        </div>
+        <div class="glass-card usecase-card">
+          <h3>Gate it in CI</h3>
+          <p><code>doctor</code> exits non-zero when full isolation isn't available, so a pipeline can refuse to run an agent unsandboxed.</p>
+          <code>aigate doctor || exit 1</code>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="kicker-sm">Install</div>
+        <h2 class="section-title">Three commands to a sandboxed agent</h2>
+      </div>
+      <div class="install-steps">
+        <div class="install-step">
+          <span class="n"></span>
+          <div>
+            <p><strong>Install the binary</strong></p>
+            <pre class="terminal-window" style="padding: 0.6rem 0.9rem;"><code style="background: none; padding: 0;">curl -L https://github.com/AxeForging/aigate/releases/latest/download/aigate-linux-amd64.tar.gz | tar xz
+sudo mv aigate-linux-amd64 /usr/local/bin/aigate</code></pre>
+          </div>
+        </div>
+        <div class="install-step">
+          <span class="n"></span>
+          <p><strong>One-time system setup</strong> &mdash; <code>sudo aigate setup && aigate init</code></p>
+        </div>
+        <div class="install-step">
+          <span class="n"></span>
+          <p><strong>Run any AI tool sandboxed</strong> &mdash; <code>aigate run -- claude</code></p>
+        </div>
+      </div>
+      <a class="axe-button" href="https://github.com/AxeForging/aigate/blob/main/docs/user/README.md#install">Full instructions on GitHub</a>
+    </div>
+  </section>
+
+  <footer>
+    <p>Built by <a href="https://github.com/murilopmachado">Murilo Machado</a> and the
+       <a href="https://github.com/AxeForging">AxeForging</a> team.</p>
+    <p>Check out our other tools at <a href="https://tools.axeforge.io">tools.axeforge.io</a>.</p>
+    <p>More from AxeForge: <a href="https://axeforge.io">AxeForge</a> ·
+       <a href="https://replayraccoon.axeforge.io">ReplayRaccoon</a> ·
+       <a href="https://axeforging.github.io/heyra/">Heyra</a> ·
+       <a href="https://axeforging.github.io/rsvp-m5/">RSVP M5</a> ·
+       <a href="https://axeforging.github.io/gumshoe/">gumshoe</a>.</p>
+  </footer>
+
+<script>
+(function () {
+  var EVENTS = [
+    { sev: "blocked", tone: "critical", title: "curl ifconfig.me — command blocked", who: "deny_exec" },
+    { sev: "blocked", tone: "critical", title: "cat ~/.ssh/id_rsa — read blocked",    who: "deny_read" },
+    { sev: "blocked", tone: "warn",     title: "connect evil-exfil.com:443 refused",  who: "allow_net" },
+    { sev: "masked",  tone: "warn",     title: "sk-ant-*** redacted from stdout",     who: "mask_stdout" },
+    { sev: "ok",       tone: "info",    title: "connect api.anthropic.com allowed",   who: "allow_net" },
+    { sev: "blocked", tone: "critical", title: "kubectl delete pods — subcommand blocked", who: "deny_exec" }
+  ];
+
+  var body = document.getElementById("feed-body");
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var MAX_LINES = 4;
+  var i = 0;
+
+  function addLine() {
+    var f = EVENTS[i % EVENTS.length];
+    i++;
+    var line = document.createElement("div");
+    line.className = "feed-line";
+    line.innerHTML =
+      '<span class="feed-tone feed-tone-' + f.tone + '"></span>' +
+      '<span class="sev" style="color: var(--af-text-muted);">' + f.sev + '</span>' +
+      '<span class="title">' + f.title + '</span>' +
+      '<span class="who">' + f.who + '</span>';
+    body.appendChild(line);
+    while (body.children.length > MAX_LINES) {
+      body.removeChild(body.firstChild);
+    }
+  }
+
+  for (var seed = 0; seed < 3; seed++) addLine();
+
+  if (!reduced) {
+    setInterval(addLine, 2400);
+  }
+})();
+</script>
+</body>
+</html>

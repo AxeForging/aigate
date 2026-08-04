@@ -1,0 +1,242 @@
+/* ============================================================
+   AxeForge Brand Kit v1 — https://tools.axeforge.io
+   Copy this file into your project. See BRAND.md for the spec.
+
+   Works two ways from this one file:
+   - Tailwind v4: `@import "tailwindcss"; @import "./axeforge.css";`
+     (the @theme inline block maps tokens to axe-* utilities)
+   - Plain CSS / no Tailwind: just link it; browsers ignore @theme.
+
+   Flavors (set on <html>): forge (default) | circuit | flux | relay | signal
+   Theme (set on <html>): dark (default, omit) | light — data-theme="light"
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=optional');
+/* display=optional (not swap): the browser decides once at layout time and
+   never swaps mid-session — kills the web-font-swap layout shift. Trade-off:
+   on a slow first load a visitor may get the fallback font for that session
+   instead of Inter/JetBrains Mono, since it never swaps in later. */
+
+/* ---- Shell tokens: identical in every flavor except relay. Never override
+   otherwise -- relay's neutral-gray shell is a deliberate, one-time exception
+   (see the "new flavor discussion" note below), not a precedent for others. ---- */
+:root {
+  color-scheme: dark;
+
+  --af-bg: #05070a;
+  --af-surface: #0a0f1a;
+  --af-surface-2: #0d1117; /* terminal body */
+  --af-surface-3: #161b22; /* terminal header */
+  --af-line: #1a2233;
+  --af-text: #ffffff;
+  --af-text-muted: #94a3b8;
+
+  --af-font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --af-font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --af-radius: 0.5rem;
+  --af-radius-lg: 1rem;
+
+  /* ---- Flavor tokens: the ONLY vars a flavor changes. Default = forge. ---- */
+  --af-accent: #ff4e00;
+  --af-accent-hover: #e64600;
+  --af-accent-contrast: #ffffff; /* text placed ON the accent; white passes only on forge, bold/large */
+}
+
+[data-flavor="circuit"] {
+  --af-accent: #22d3ee;
+  --af-accent-hover: #06b6d4;
+  --af-accent-contrast: #05070a;
+}
+
+[data-flavor="flux"] {
+  --af-accent: #a78bfa;
+  --af-accent-hover: #8b5cf6;
+  --af-accent-contrast: #05070a;
+}
+
+/* relay: the one flavor that also overrides shell tokens (bg/surface/-2/-3/line),
+   not just the 3 accent vars -- "external tools/hardware/products" (Heyra, rsvp-m5,
+   ReplayRaccoon), inheriting ReplayRaccoon's neutral-gray shell instead of the
+   default blue-black. This is the "new flavor discussion" the Do/Don't section
+   below refers to, made real -- a deliberate one-time exception, not a precedent. */
+[data-flavor="relay"] {
+  --af-bg: #0a0a0a;
+  --af-surface: #1a1a1a;
+  --af-surface-2: #161616; /* terminal body */
+  --af-surface-3: #202020; /* terminal header */
+  --af-line: #2a2a2a;
+
+  --af-accent: #ff6b00;
+  --af-accent-hover: #e56000;
+  --af-accent-contrast: #05070a;
+}
+
+[data-flavor="signal"] {
+  --af-accent: #ffb000;
+  --af-accent-hover: #e69e00;
+  --af-accent-contrast: #05070a;
+}
+
+/* ---- Light theme: opt-in via data-theme="light" on <html>, alongside
+   data-flavor. Omit data-theme for dark (the default) — existing tools
+   that never set it are unaffected. Every accent below is the SAME hue as
+   its dark-mode counterpart, darkened only as far as needed to clear
+   4.5:1 against the light shell bg (computed, not eyeballed) — verified
+   >=4.5:1 as button-fill-with-white-text at any size too, so light mode
+   drops dark mode's forge-only "bold/large" caveat entirely.
+
+   --af-surface-2/-3 (terminal body/header) are deliberately NOT overridden
+   here: the terminal stays a dark console on a light page — a common
+   convention (docs sites, code blocks) that also sidesteps re-deriving
+   accent-as-text contrast for a component that's a fixed dark box in
+   every flavor already. ---- */
+[data-theme="light"] {
+  color-scheme: light;
+  --af-bg: #f7f8fa;
+  --af-surface: #ffffff;
+  --af-line: #dde1e6;
+  --af-text: #0a0f1a;
+  --af-text-muted: #475569; /* 7.13:1 on --af-bg */
+}
+
+[data-theme="light"][data-flavor="forge"] {
+  --af-accent: #cf3f00; /* 4.54:1 on --af-bg, 4.81:1 vs white button text */
+  --af-accent-hover: #b63700;
+  --af-accent-contrast: #ffffff;
+}
+
+[data-theme="light"][data-flavor="circuit"] {
+  --af-accent: #0b7c8d; /* 4.60:1 on --af-bg, 4.90:1 vs white button text */
+  --af-accent-hover: #0a6d7c;
+  --af-accent-contrast: #ffffff;
+}
+
+[data-theme="light"][data-flavor="flux"] {
+  --af-accent: #7a4ff7; /* 4.60:1 on --af-bg, 4.90:1 vs white button text */
+  --af-accent-hover: #5e2af5;
+  --af-accent-contrast: #ffffff;
+}
+
+/* relay-light: the neutral-gray shell exception carried into light mode too
+   — same reasoning as dark relay (matches ReplayRaccoon's own neutral
+   palette rather than the kit's blue-tinted default), so relay reads as
+   one consistent identity across both themes instead of only diverging
+   from the pack in dark mode. */
+[data-theme="light"][data-flavor="relay"] {
+  --af-bg: #f5f5f5;
+  --af-line: #e2e2e2;
+  --af-text: #0a0a0a;
+  --af-text-muted: #525252; /* 7.17:1 on --af-bg */
+  --af-accent: #ba4e00; /* 4.61:1 on --af-bg, 6.12:1 hover vs white button text */
+  --af-accent-hover: #a44500;
+  --af-accent-contrast: #ffffff;
+}
+
+[data-theme="light"][data-flavor="signal"] {
+  --af-accent: #966800; /* 4.62:1 on --af-bg, 4.91:1 vs white button text */
+  --af-accent-hover: #845c00;
+  --af-accent-contrast: #ffffff;
+}
+
+/* ---- Tailwind v4 adapter. Inert (ignored at-rule) without Tailwind.
+   Must be `inline`: utilities then emit var(--af-*) directly, so a
+   [data-flavor] override below :root still wins. Plain @theme would
+   resolve the var() once at :root and pin every flavor to forge. ---- */
+@theme inline {
+  --font-sans: var(--af-font-sans);
+  --font-mono: var(--af-font-mono);
+
+  --color-axe-black: var(--af-bg);
+  --color-axe-navy: var(--af-surface);
+  --color-axe-line: var(--af-line);
+  --color-axe-muted: var(--af-text-muted);
+  --color-axe-accent: var(--af-accent);
+  --color-axe-accent-hover: var(--af-accent-hover);
+  --color-axe-accent-contrast: var(--af-accent-contrast);
+
+  /* deprecated — old hub names; use axe-accent / axe-accent-hover */
+  --color-axe-orange: var(--af-accent);
+  --color-axe-orange-hover: var(--af-accent-hover);
+}
+
+/* ---- Base ---- */
+body {
+  background: var(--af-bg);
+  color: var(--af-text);
+  font-family: var(--af-font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--af-accent);
+  outline-offset: 2px;
+}
+
+/* ---- Components (vanilla CSS — no Tailwind required) ---- */
+
+.technical-grid {
+  background-size: 80px 80px;
+  background-image: radial-gradient(circle, var(--af-line) 1px, transparent 1px);
+}
+
+.glass-card {
+  background: color-mix(in srgb, var(--af-surface) 60%, transparent);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+  border: 1px solid var(--af-line);
+  border-radius: var(--af-radius-lg);
+  transition: border-color 0.5s ease, box-shadow 0.5s ease;
+}
+.glass-card:hover {
+  border-color: color-mix(in srgb, var(--af-accent) 50%, transparent);
+}
+
+.terminal-window {
+  background: var(--af-surface-2);
+  border: 1px solid var(--af-line);
+  border-radius: var(--af-radius);
+  overflow: hidden;
+  font-family: var(--af-font-mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.5);
+}
+.terminal-header {
+  background: var(--af-surface-3);
+  padding: 0.5rem 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--af-line);
+}
+
+/* macOS traffic lights — semantic, not brand; fixed hexes on purpose */
+.dot { width: 10px; height: 10px; border-radius: 9999px; }
+.dot-red { background: #ff5f56; }
+.dot-yellow { background: #ffbd2e; }
+.dot-green { background: #27c93f; }
+
+.glow-accent,
+.glow-orange /* deprecated alias */ {
+  box-shadow: 0 0 20px color-mix(in srgb, var(--af-accent) 15%, transparent);
+}
+
+.axe-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--af-accent);
+  color: var(--af-accent-contrast); /* never hardcode white — fails on circuit/flux/signal */
+  padding: 0.75rem 1.5rem;
+  border: 0;
+  border-radius: var(--af-radius);
+  font-family: var(--af-font-sans);
+  font-size: 1.25rem; /* WCAG "large text" floor (18.66px+ bold) — forge's white-on-accent (3.31:1) only clears AA at large-text's 3:1, not body text's 4.5:1 */
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.axe-button:hover { background: var(--af-accent-hover); }
+.axe-button:active { transform: scale(0.95); }
