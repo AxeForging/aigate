@@ -1,0 +1,29 @@
+# aigate
+
+> OS-level sandbox for AI coding agents. Kernel-enforced file, command, and network isolation — like a Python venv, but for AI permissions.
+
+aigate wraps Claude Code, Cursor, Copilot, Aider, and any other AI coding tool in a sandbox enforced by the operating system kernel, not the application. Application-level permission systems (`.claudeignore`, `permissions.deny`) can be bypassed; aigate uses POSIX ACLs, Linux namespaces (bubblewrap), and egress allowlists so the restriction can't be worked around from inside the tool.
+
+## How it isolates
+
+- **File isolation**: POSIX ACLs (Linux) / macOS ACLs deny read access to secrets, regardless of what the AI tool tries
+- **Filesystem scope**: `allowed_paths` hides everything in `$HOME` except the working directory and explicitly allowed paths — non-scoped files are invisible at the kernel level, for both reads and writes
+- **Process isolation**: Bubblewrap (`bwrap`) + mount namespaces on Linux; Seatbelt on macOS
+- **Network isolation**: `bwrap --unshare-net` + `slirp4netns` + `iptables`/`ip6tables` restrict egress to an allowlist of domains
+- **Command blocking**: deny execution of specific commands (e.g. `curl`, `wget`, `ssh`)
+- **Output masking**: redact secrets (API keys, tokens) from stdout/stderr before they reach the terminal
+- **Audit log + dashboard**: every run and blocked action is recorded to `~/.aigate/audit.jsonl`; `aigate serve` exposes a local web dashboard over it
+
+## Configuration
+
+Global config lives at `~/.aigate/config.yaml`, created by `aigate init` with sensible defaults (deny rules for `.env`, `secrets/`, `.ssh/`, `*.pem`, etc.). Projects can extend the global rules with a `.aigate.yaml` in the project root, adding `deny_read` and `allow_net` entries per project.
+
+## Who it's for
+
+Built for GDPR/ISO/security-regulated teams that need AI coding agents to run against real codebases without a proven-bypassable, app-level permission layer as the only safeguard. Ships as a single Go binary for Linux, macOS, and WSL.
+
+## Contact & links
+
+- Repository: https://github.com/AxeForging/aigate
+- Website: https://axeforging.github.io/aigate/
+- License: MIT
