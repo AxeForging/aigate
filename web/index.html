@@ -61,7 +61,7 @@
   .topbar-nav a.navlink { color: var(--af-text-muted); text-decoration: none; }
   .topbar-nav a.navlink:hover { color: var(--af-text); }
 
-  /* ---- Hero: asymmetric two-column ---- */
+  /* ---- Hero: stacked -- text band, then a full-width architecture diagram ---- */
   .hero {
     background-image: radial-gradient(circle, var(--af-line) 1px, transparent 1px);
     background-size: 32px 32px;
@@ -69,13 +69,10 @@
     border-bottom: 1px solid var(--af-line);
   }
   .hero .wrap {
-    display: grid;
-    grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
-    gap: 3rem;
-    align-items: center;
-    padding-top: 4.5rem;
-    padding-bottom: 4.5rem;
+    padding-top: 4rem;
+    padding-bottom: 2.5rem;
   }
+  .hero-copy { max-width: 62ch; }
   .kicker {
     font-family: var(--af-font-mono);
     font-size: 0.8rem;
@@ -115,7 +112,8 @@
   .trust-line a { color: var(--af-accent); text-decoration: none; }
   .trust-line a:hover { text-decoration: underline; }
 
-  /* ---- Live audit-log demo ---- */
+  /* ---- Live caption + severity dots (reused by the boundary diagram legend
+     and by the isolation feature cards below) ---- */
   .feed-caption { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; font-size: 0.8rem; color: var(--af-text-muted); }
   .pulse-dot { position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--af-accent); flex: none; }
   .pulse-dot::after {
@@ -123,28 +121,43 @@
     animation: pulse 2s ease-out infinite;
   }
   @keyframes pulse { 0% { opacity: 0.6; transform: scale(1); } 100% { opacity: 0; transform: scale(2.8); } }
-  #feed-window { box-shadow: 0 30px 60px -20px rgb(0 0 0 / 0.6); max-width: 100%; }
-  #feed-banner { padding: 0.85rem 1rem 0.4rem; font-family: var(--af-font-mono); font-size: 0.78rem; color: var(--af-text-muted); border-bottom: 1px solid var(--af-line); }
-  #feed-banner div { padding: 0.1rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-  #feed-body { min-height: 11rem; max-height: 11rem; padding: 0.6rem 1rem 0.85rem; overflow: hidden; font-family: var(--af-font-mono); font-size: 0.82rem; }
-  .feed-line {
-    display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 0.6rem; align-items: baseline;
-    padding: 0.3rem 0; color: var(--af-text-muted);
-    animation: feed-in 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-  }
-  .feed-line .title { overflow-wrap: break-word; }
-  @keyframes feed-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
-  .feed-line .sev { text-transform: uppercase; font-size: 0.72rem; }
-  .feed-line .title { color: var(--af-text); }
-  .feed-line .who { color: var(--af-text-muted); opacity: 0.75; text-align: right; }
   .feed-tone { width: 6px; height: 6px; border-radius: 50%; align-self: center; }
   .feed-tone-info { background: #22d3ee; }
   .feed-tone-warn { background: #ffb000; }
   .feed-tone-critical { background: var(--af-accent); box-shadow: 0 0 8px color-mix(in srgb, var(--af-accent) 60%, transparent); }
   @media (prefers-reduced-motion: reduce) {
-    .feed-line { animation: none; }
     .pulse-dot::after { animation: none; opacity: 0; }
   }
+
+  /* ---- Boundary diagram: aigate's actual mechanism, drawn ---- */
+  .boundary-stage {
+    border-top: 1px solid var(--af-line);
+    background: color-mix(in srgb, var(--af-surface) 45%, transparent);
+    padding: 2.25rem 0 3rem;
+  }
+  .boundary-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .boundary-diagram { min-width: 760px; }
+  #boundary-svg { display: block; width: 100%; height: auto; }
+  #boundary-rect { fill: none; stroke: var(--af-accent); stroke-width: 2.5; opacity: 0.85; filter: drop-shadow(0 0 10px color-mix(in srgb, var(--af-accent) 45%, transparent)); }
+  .corner-bracket { fill: none; stroke: var(--af-accent); stroke-width: 3; stroke-linecap: square; }
+  .process-box { fill: var(--af-surface); stroke: var(--af-line); stroke-width: 1.5; }
+  .process-label { font-family: var(--af-font-mono); font-size: 15px; letter-spacing: 0.05em; fill: var(--af-text); font-weight: 600; text-transform: uppercase; }
+  .process-sublabel { font-family: var(--af-font-mono); font-size: 11px; fill: var(--af-text-muted); }
+  .gate-notch { fill: var(--af-bg); stroke: var(--af-line); stroke-width: 2; transition: fill 0.2s ease, stroke 0.2s ease, filter 0.2s ease; }
+  .gate-notch.tone-critical { stroke: var(--af-accent); fill: color-mix(in srgb, var(--af-accent) 30%, var(--af-bg)); filter: drop-shadow(0 0 7px color-mix(in srgb, var(--af-accent) 70%, transparent)); }
+  .gate-notch.tone-warn { stroke: #ffb000; fill: color-mix(in srgb, #ffb000 30%, var(--af-bg)); filter: drop-shadow(0 0 7px rgb(255 176 0 / 0.65)); }
+  .gate-notch.tone-info { stroke: #22d3ee; fill: color-mix(in srgb, #22d3ee 30%, var(--af-bg)); filter: drop-shadow(0 0 7px rgb(34 211 238 / 0.65)); }
+  .gate-tag { font-family: var(--af-font-mono); font-size: 14px; letter-spacing: 0.08em; fill: var(--af-text-muted); text-transform: uppercase; }
+  .dest-pill { fill: var(--af-surface); stroke: var(--af-line); stroke-width: 1.5; }
+  .dest-text { font-family: var(--af-font-mono); font-size: 12px; fill: var(--af-text-muted); }
+  .dest-subtag { font-family: var(--af-font-mono); font-size: 9px; letter-spacing: 0.1em; fill: var(--af-text-muted); opacity: 0.7; text-transform: uppercase; }
+  .syscall-dot { opacity: 0; }
+  .gate-pulse { fill: none; opacity: 0; }
+  .boundary-readout { margin-top: 1.1rem; font-family: var(--af-font-mono); font-size: 0.85rem; color: var(--af-text-muted); min-height: 1.4em; }
+  .boundary-legend { display: flex; gap: 1.5rem; flex-wrap: wrap; margin-top: 0.9rem; font-family: var(--af-font-mono); font-size: 0.78rem; color: var(--af-text-muted); }
+  .boundary-legend .swatch { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 0.45rem; vertical-align: middle; }
+  .swatch-blocked { background: var(--af-accent); }
+  .swatch-allowed { background: #22d3ee; }
 
   /* ---- Sections ---- */
   section { padding: 4rem 0; border-top: 1px solid var(--af-line); }
@@ -199,15 +212,14 @@
   footer a { text-decoration: underline; text-decoration-color: var(--af-line); text-underline-offset: 3px; }
 
   @media (max-width: 820px) {
-    .hero .wrap { grid-template-columns: 1fr; padding-top: 3rem; padding-bottom: 3rem; }
+    .hero .wrap { padding-top: 3rem; padding-bottom: 2rem; }
+    .boundary-stage { padding: 1.75rem 0 2.5rem; }
     .topbar-nav a[href^="#"] { display: none; }
     .topbar-nav { gap: 0.75rem; }
   }
   @media (max-width: 480px) {
     .topbar .wrap { flex-wrap: wrap; row-gap: 0.6rem; padding-top: 0.75rem; padding-bottom: 0.75rem; min-height: 0; }
     .topbar { min-height: 0; }
-    .feed-line { grid-template-columns: auto auto minmax(0, 1fr); }
-    .feed-line .who { display: none; }
   }
   .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 </style>
@@ -230,7 +242,7 @@
 
   <section class="hero">
     <div class="wrap">
-      <div>
+      <div class="hero-copy">
         <div class="kicker">OS-level sandbox for AI coding agents</div>
         <h1>A trust boundary the AI can't argue its way out of.</h1>
         <p class="lede">
@@ -247,21 +259,61 @@
         </div>
         <p class="trust-line">The most-starred tool in the AxeForge portfolio. <a href="https://github.com/AxeForging/aigate/stargazers">See it on GitHub</a>.</p>
       </div>
+    </div>
 
-      <div>
-        <div class="feed-caption"><span class="pulse-dot"></span> Live demo (simulated output, not a real sandbox)</div>
-        <div class="terminal-window" id="feed-window">
-          <div class="terminal-header">
-            <span class="dot dot-red"></span><span class="dot dot-yellow"></span><span class="dot dot-green"></span>
-            <span style="margin-left: 0.5rem; color: var(--af-text-muted);">aigate run -- claude</span>
+    <div class="boundary-stage">
+      <div class="wrap">
+        <div class="feed-caption"><span class="pulse-dot"></span> Live demo — simulated syscalls crossing the sandbox boundary, not a real sandbox</div>
+        <div class="boundary-scroll">
+          <div class="boundary-diagram">
+            <svg id="boundary-svg" viewBox="0 0 1000 300" role="img" aria-labelledby="boundary-svg-title">
+              <title id="boundary-svg-title">Diagram of an AI agent process enclosed by a kernel-enforced sandbox boundary. Three gates control what may cross: FILE, EXEC, and NETWORK. Allowed syscalls pass through their gate; blocked syscalls bounce back inside the boundary.</title>
+
+              <path class="corner-bracket" d="M130,50 L110,50 L110,70" />
+              <path class="corner-bracket" d="M710,50 L730,50 L730,70" />
+              <path class="corner-bracket" d="M110,230 L110,250 L130,250" />
+              <path class="corner-bracket" d="M730,230 L730,250 L710,250" />
+              <rect id="boundary-rect" x="110" y="50" width="620" height="200" rx="14" />
+
+              <g id="process-group">
+                <rect class="process-box" x="300" y="95" width="240" height="110" rx="10" />
+                <text class="process-label" x="420" y="144" text-anchor="middle">AI agent process</text>
+                <text class="process-sublabel" x="420" y="163" text-anchor="middle">claude · cursor · aider</text>
+              </g>
+
+              <g id="dest-group">
+                <rect class="dest-pill" x="800" y="132" width="172" height="36" rx="18" />
+                <text class="dest-subtag" x="886" y="122" text-anchor="middle">allowed host</text>
+                <text class="dest-text" x="886" y="155" text-anchor="middle">api.anthropic.com</text>
+              </g>
+
+              <g class="gate">
+                <rect id="gate-file" class="gate-notch" x="101" y="141" width="18" height="18" />
+                <text class="gate-tag" x="90" y="146" text-anchor="end">File</text>
+              </g>
+              <g class="gate">
+                <rect id="gate-exec" class="gate-notch" x="411" y="41" width="18" height="18" />
+                <text class="gate-tag" x="420" y="27" text-anchor="middle">Exec</text>
+              </g>
+              <g class="gate">
+                <rect id="gate-network" class="gate-notch" x="721" y="141" width="18" height="18" />
+                <text class="gate-tag" x="750" y="146" text-anchor="start">Net</text>
+              </g>
+
+              <circle id="pulse-file" class="gate-pulse" cx="110" cy="150" r="4" />
+              <circle id="pulse-exec" class="gate-pulse" cx="420" cy="50" r="4" />
+              <circle id="pulse-network" class="gate-pulse" cx="730" cy="150" r="4" />
+              <circle id="pulse-dest" class="gate-pulse" cx="886" cy="150" r="4" />
+
+              <circle id="dot-a" class="syscall-dot" cx="420" cy="150" r="6" />
+              <circle id="dot-b" class="syscall-dot" cx="420" cy="150" r="6" />
+            </svg>
           </div>
-          <div id="feed-banner">
-            <div>[aigate] sandbox active</div>
-            <div>[aigate] deny_read: .env, secrets/, ~/.ssh/, *.pem</div>
-            <div>[aigate] deny_exec: curl, wget, ssh, scp</div>
-            <div>[aigate] allow_net: api.anthropic.com, api.github.com</div>
-          </div>
-          <div id="feed-body"></div>
+        </div>
+        <p class="boundary-readout" id="boundary-readout">Every file read, command, and network call the agent makes is checked against your rules before it runs.</p>
+        <div class="boundary-legend">
+          <span><span class="swatch swatch-blocked"></span>Blocked — kernel refuses, the process physically cannot cross</span>
+          <span><span class="swatch swatch-allowed"></span>Allowed — matches an explicit rule</span>
         </div>
       </div>
     </div>
@@ -419,43 +471,173 @@ sudo mv aigate-linux-amd64 /usr/local/bin/aigate</code></pre>
        <a href="https://axeforging.github.io/gumshoe/">gumshoe</a>.</p>
   </footer>
 
+<script src="https://unpkg.com/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://unpkg.com/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
 <script>
 (function () {
-  var EVENTS = [
-    { sev: "blocked", tone: "critical", title: "curl ifconfig.me — command blocked", who: "deny_exec" },
-    { sev: "blocked", tone: "critical", title: "cat ~/.ssh/id_rsa — read blocked",    who: "deny_read" },
-    { sev: "blocked", tone: "warn",     title: "connect evil-exfil.com:443 refused",  who: "allow_net" },
-    { sev: "masked",  tone: "warn",     title: "sk-ant-*** redacted from stdout",     who: "mask_stdout" },
-    { sev: "ok",       tone: "info",    title: "connect api.anthropic.com allowed",   who: "allow_net" },
-    { sev: "blocked", tone: "critical", title: "kubectl delete pods — subcommand blocked", who: "deny_exec" }
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // No GSAP (CDN blocked) or reduced motion: markup already renders in its
+  // final, fully-visible, fully-sealed state by default -- nothing to do.
+  if (typeof gsap === "undefined" || reduced) return;
+
+  gsap.registerPlugin(ScrollTrigger);
+
+  /* ---------------------------------------------------------------------
+   * 1. Hero entrance: kicker -> h1 -> lede -> ctas -> trust line -> diagram
+   * --------------------------------------------------------------------- */
+  var kicker = document.querySelector(".hero .kicker");
+  var h1 = document.querySelector(".hero h1");
+  var lede = document.querySelector(".hero p.lede");
+  var ctas = document.querySelector(".hero .ctas");
+  var trustLine = document.querySelector(".hero .trust-line");
+  var boundaryStage = document.querySelector(".boundary-stage");
+
+  var heroTargets = [kicker, h1, lede, ctas, trustLine, boundaryStage].filter(Boolean);
+  gsap.set(heroTargets, { opacity: 0, y: 22 });
+
+  var heroTl = gsap.timeline({ defaults: { ease: "power3.out", duration: 0.7 } });
+  heroTl
+    .to(kicker, { opacity: 1, y: 0 })
+    .to(h1, { opacity: 1, y: 0 }, "-=0.45")
+    .to(lede, { opacity: 1, y: 0 }, "-=0.45")
+    .to(ctas, { opacity: 1, y: 0 }, "-=0.4")
+    .to(trustLine, { opacity: 1, y: 0 }, "-=0.35")
+    .to(boundaryStage, { opacity: 1, y: 0, duration: 0.8 }, "-=0.3")
+    .call(sealBoundary, [], "-=0.25");
+
+  /* ---------------------------------------------------------------------
+   * 2. Boundary diagram: seal the perimeter on load, then loop syscalls
+   *    crossing (or bouncing off) it.
+   * --------------------------------------------------------------------- */
+  var GATES = {
+    file: { x: 110, y: 150 },
+    exec: { x: 420, y: 50 },
+    network: { x: 730, y: 150 }
+  };
+  var CENTER = { x: 420, y: 150 };
+  var DEST = { x: 886, y: 150 };
+  var TONE_COLOR = {
+    critical: getComputedStyle(document.documentElement).getPropertyValue("--af-accent").trim() || "#ff6b00",
+    warn: "#ffb000",
+    info: "#22d3ee"
+  };
+
+  var SYSCALLS = [
+    { gate: "file", tone: "critical", blocked: true, rule: "deny_read", label: "cat ~/.ssh/id_rsa — read blocked" },
+    { gate: "exec", tone: "critical", blocked: true, rule: "deny_exec", label: "curl ifconfig.me — command blocked" },
+    { gate: "network", tone: "warn", blocked: true, rule: "allow_net", label: "connect evil-exfil.com:443 refused" },
+    { gate: "network", tone: "info", blocked: false, rule: "allow_net", label: "connect api.anthropic.com allowed" },
+    { gate: "exec", tone: "critical", blocked: true, rule: "deny_exec", label: "kubectl delete pods — subcommand blocked" }
   ];
 
-  var body = document.getElementById("feed-body");
-  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  var MAX_LINES = 4;
-  var i = 0;
+  var boundaryRect = document.getElementById("boundary-rect");
+  var corners = document.querySelectorAll(".corner-bracket");
+  var processGroup = document.getElementById("process-group");
+  var destGroup = document.getElementById("dest-group");
+  var gateNotches = [document.getElementById("gate-file"), document.getElementById("gate-exec"), document.getElementById("gate-network")];
+  var gateTags = document.querySelectorAll(".gate-tag");
+  var readout = document.getElementById("boundary-readout");
+  var dots = [document.getElementById("dot-a"), document.getElementById("dot-b")];
+  var pulses = {
+    file: document.getElementById("pulse-file"),
+    exec: document.getElementById("pulse-exec"),
+    network: document.getElementById("pulse-network"),
+    dest: document.getElementById("pulse-dest")
+  };
+  var loopRunning = false;
 
-  function addLine() {
-    var f = EVENTS[i % EVENTS.length];
-    i++;
-    var line = document.createElement("div");
-    line.className = "feed-line";
-    line.innerHTML =
-      '<span class="feed-tone feed-tone-' + f.tone + '"></span>' +
-      '<span class="sev" style="color: var(--af-text-muted);">' + f.sev + '</span>' +
-      '<span class="title">' + f.title + '</span>' +
-      '<span class="who">' + f.who + '</span>';
-    body.appendChild(line);
-    while (body.children.length > MAX_LINES) {
-      body.removeChild(body.firstChild);
+  function setGateTone(key, tone) {
+    var el = key === "file" ? gateNotches[0] : key === "exec" ? gateNotches[1] : gateNotches[2];
+    el.setAttribute("class", "gate-notch" + (tone ? " tone-" + tone : ""));
+  }
+
+  function pulseAt(el) {
+    gsap.fromTo(el, { attr: { r: 4 }, opacity: 0.9 }, { attr: { r: 24 }, opacity: 0, duration: 0.55, ease: "power1.out" });
+  }
+
+  function animateSyscall(dotEl, ev, onDone) {
+    var gate = GATES[ev.gate];
+    gsap.set(dotEl, { attr: { cx: CENTER.x, cy: CENTER.y }, opacity: 1, fill: TONE_COLOR[ev.tone] });
+
+    var tl = gsap.timeline({ onComplete: onDone });
+    tl.to(dotEl, { attr: { cx: gate.x, cy: gate.y }, duration: 0.85, ease: "power1.in" })
+      .call(function () {
+        setGateTone(ev.gate, ev.tone);
+        pulseAt(pulses[ev.gate]);
+        readout.textContent = (ev.blocked ? "Blocked · " : "Allowed · ") + ev.rule + " · " + ev.label;
+      })
+      .to({}, { duration: 0.15 })
+      .call(function () { setGateTone(ev.gate, null); });
+
+    if (ev.blocked) {
+      tl.to(dotEl, { attr: { cx: CENTER.x, cy: CENTER.y }, duration: 0.7, ease: "power2.out" })
+        .to(dotEl, { opacity: 0, duration: 0.25 }, "-=0.15");
+    } else {
+      tl.to(dotEl, { attr: { cx: DEST.x, cy: DEST.y }, duration: 0.6, ease: "power1.out" })
+        .call(function () { pulseAt(pulses.dest); })
+        .to(dotEl, { opacity: 0, duration: 0.3 });
     }
+    tl.to({}, { duration: 0.5 });
   }
 
-  for (var seed = 0; seed < 3; seed++) addLine();
-
-  if (!reduced) {
-    setInterval(addLine, 2400);
+  function startDotLoop() {
+    if (loopRunning) return;
+    loopRunning = true;
+    dots.forEach(function (dotEl, poolIndex) {
+      var i = poolIndex;
+      function next() {
+        var ev = SYSCALLS[i % SYSCALLS.length];
+        i += dots.length;
+        animateSyscall(dotEl, ev, next);
+      }
+      gsap.delayedCall(poolIndex * 1.3, next);
+    });
   }
+
+  function sealBoundary() {
+    var len = boundaryRect.getTotalLength();
+    gsap.set(boundaryRect, { attr: { "stroke-dasharray": len, "stroke-dashoffset": len } });
+    gsap.set(gateNotches, { transformOrigin: "50% 50%" });
+
+    gsap.timeline({ onComplete: startDotLoop })
+      .to(boundaryRect, { attr: { "stroke-dashoffset": 0 }, duration: 1.1, ease: "power2.inOut" })
+      .from(corners, { opacity: 0, duration: 0.4, stagger: 0.05 }, "-=0.35")
+      .from(processGroup, { opacity: 0, scale: 0.92, transformOrigin: "50% 50%", duration: 0.5, ease: "back.out(1.7)" }, "-=0.2")
+      .from(gateNotches, { opacity: 0, scale: 0, duration: 0.4, stagger: 0.1, ease: "back.out(2)" }, "-=0.2")
+      .from(gateTags, { opacity: 0, y: -6, duration: 0.3, stagger: 0.1 }, "-=0.3")
+      .from(destGroup, { opacity: 0, x: 20, duration: 0.4 }, "-=0.2");
+  }
+
+  /* ---------------------------------------------------------------------
+   * 3. Scroll-triggered reveals: each section's cards fade + rise in,
+   *    staggered, once, the first time the section enters the viewport.
+   * --------------------------------------------------------------------- */
+  function revealSection(sectionEl, itemSelector) {
+    if (!sectionEl) return;
+    var head = sectionEl.querySelector(".section-head");
+    var items = itemSelector ? sectionEl.querySelectorAll(itemSelector) : [];
+    var targets = head ? [head].concat(Array.prototype.slice.call(items)) : Array.prototype.slice.call(items);
+    if (!targets.length) return;
+
+    gsap.set(targets, { opacity: 0, y: 28 });
+    ScrollTrigger.create({
+      trigger: sectionEl,
+      start: "top 80%",
+      once: true,
+      onEnter: function () {
+        var tl = gsap.timeline({ defaults: { duration: 0.6, ease: "power2.out" } });
+        if (head) tl.to(head, { opacity: 1, y: 0 });
+        if (items.length) tl.to(items, { opacity: 1, y: 0, stagger: 0.08 }, head ? "-=0.35" : 0);
+      }
+    });
+  }
+
+  revealSection(document.getElementById("isolation"), ".feature-card");
+  revealSection(document.getElementById("platforms"), ".table-scroll");
+  revealSection(document.getElementById("commands"), ".guide-step");
+  revealSection(document.getElementById("usecases"), ".usecase-card");
+  revealSection(document.getElementById("install"), ".install-step");
 })();
 </script>
 </body>
