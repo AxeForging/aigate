@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"golang.org/x/term"
@@ -75,11 +76,53 @@ func runWithPTY(out io.Writer, name string, args ...string) error {
 		defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
 	}
 
-	// Forward parent stdin → PTY master → child stdin.
-	go func() { _, _ = io.Copy(ptm, os.Stdin) }()
+	// Forward parent stdin → PTY master → child stdin, stopped once the child
+	// is done.
+	stopStdin := copyStdin(ptm)
+	defer stopStdin()
 
 	// Copy PTY master output (child stdout+stderr) through the masker.
 	_, _ = io.Copy(out, ptm)
 
 	return cmd.Wait()
+}
+
+// copyStdin copies the terminal into dst until stop is called. It reads from
+// a non-blocking duplicate of stdin so stop can interrupt a pending read; a
+// read left running after the child exits would swallow the user's next input
+// (e.g. the next question in `aigate identity add`).
+func copyStdin(dst io.Writer) (stop func()) {
+	fd := int(os.Stdin.Fd())
+	unstoppable := func() func() {
+		go func() { _, _ = io.Copy(dst, os.Stdin) }()
+		return func() {}
+	}
+	dupFd, err := syscall.Dup(fd)
+	if err != nil {
+		return unstoppable()
+	}
+	if err := syscall.SetNonblock(dupFd, true); err != nil {
+		_ = syscall.Close(dupFd)
+		return unstoppable()
+	}
+	f := os.NewFile(uintptr(dupFd), "stdin")
+	restore := func() {
+		_ = f.Close()
+		_ = syscall.SetNonblock(fd, false) // the flag is shared with stdin
+	}
+	if err := f.SetReadDeadline(time.Time{}); err != nil {
+		// Not pollable: can't interrupt it, so don't leave stdin non-blocking.
+		restore()
+		return unstoppable()
+	}
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(dst, f)
+		close(done)
+	}()
+	return func() {
+		_ = f.SetReadDeadline(time.Now())
+		<-done
+		restore()
+	}
 }

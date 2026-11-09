@@ -60,7 +60,7 @@ func (a *RunAction) Execute(c *cli.Context) error {
 		}
 	}
 
-	identity, err := a.resolveIdentity(globalCfg, merged, c.String("identity"), workDir)
+	identity, err := resolveRunIdentity(globalCfg, merged, c.String("identity"), workDir)
 	if err != nil {
 		return err
 	}
@@ -87,10 +87,10 @@ func (a *RunAction) Execute(c *cli.Context) error {
 	return a.runner.Run(profile, cmd, cmdArgs)
 }
 
-// resolveIdentity picks the identity for this run and narrows merged's
+// resolveRunIdentity picks the identity for this run and narrows merged's
 // allowed_paths to it. Fatal problems with the chosen identity (or ones that
 // concern several identities) stop the run; others are printed as warnings.
-func (a *RunAction) resolveIdentity(global, merged *domain.Config, flag, workDir string) (*domain.ResolvedIdentity, error) {
+func resolveRunIdentity(global, merged *domain.Config, flag, workDir string) (*domain.ResolvedIdentity, error) {
 	svc := services.NewIdentityService()
 	id, err := svc.Resolve(global, flag, workDir)
 	if err != nil {
