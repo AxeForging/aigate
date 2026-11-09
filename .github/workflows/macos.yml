@@ -1,0 +1,23 @@
+name: macOS
+
+# Manual only: run it against a branch with
+#   gh workflow run macos.yml --ref <branch>
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.10'
+          cache: true
+      - name: Unit + integration tests (Seatbelt)
+        run: go test -count=1 ./...
+      - name: Doctor
+        run: go build -o "$RUNNER_TEMP/aigate" . && "$RUNNER_TEMP/aigate" doctor
