@@ -248,11 +248,14 @@ func expandHome(p string) (string, error) {
 // deepestBinding returns the identity bound to the deepest folder that
 // contains workDir, and that folder as written in config.
 func deepestBinding(bindings map[string]string, workDir string) (name, dir string) {
-	wd := filepath.Clean(workDir)
+	wd := CanonicalPath(workDir)
 	best := -1
 	for raw, n := range bindings {
 		p, err := expandHome(raw)
-		if err != nil || !underAny(wd, []string{p}) {
+		if err != nil {
+			continue
+		}
+		if p = CanonicalPath(p); !underAny(wd, []string{p}) {
 			continue
 		}
 		if len(p) > best || (len(p) == best && raw < dir) {
@@ -289,4 +292,14 @@ func identityOwnPaths(id *domain.ResolvedIdentity) []string {
 		paths = append(paths, settings)
 	}
 	return paths
+}
+
+// CanonicalPath resolves symlinks so paths reached different ways compare
+// equal (macOS /var → /private/var, Silverblue /home → /var/home). Paths
+// that don't exist are only cleaned.
+func CanonicalPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
 }

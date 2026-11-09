@@ -264,6 +264,11 @@ func tildePath(p string) string {
 	if err != nil || p == "" {
 		return p
 	}
+	// Compare resolved forms: cwd may come back as /private/var/… while
+	// $HOME is /var/… (macOS) or /var/home vs /home (Silverblue).
+	if rp, rh := services.CanonicalPath(p), services.CanonicalPath(home); rp == rh || strings.HasPrefix(rp, rh+"/") {
+		p, home = rp, rh
+	}
 	if p == home {
 		return "~"
 	}
