@@ -265,24 +265,7 @@ func orDash(s string) string {
 }
 
 // tildePath shows paths under $HOME as ~/… so output and config stay readable.
-func tildePath(p string) string {
-	home, err := os.UserHomeDir()
-	if err != nil || p == "" {
-		return p
-	}
-	// Compare resolved forms: cwd may come back as /private/var/… while
-	// $HOME is /var/… (macOS) or /var/home vs /home (Silverblue).
-	if rp, rh := services.CanonicalPath(p), services.CanonicalPath(home); rp == rh || strings.HasPrefix(rp, rh+"/") {
-		p, home = rp, rh
-	}
-	if p == home {
-		return "~"
-	}
-	if strings.HasPrefix(p, home+"/") {
-		return "~/" + strings.TrimPrefix(p, home+"/")
-	}
-	return p
-}
+func tildePath(p string) string { return services.TildePath(p) }
 
 func expand(p string) string {
 	if p == "~" || strings.HasPrefix(p, "~/") {

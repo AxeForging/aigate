@@ -830,3 +830,167 @@ button.is-syncing {
     padding: 0 18px 18px;
   }
 }
+
+/* ── Identities + decisions (spec 004) ───────────────────────────────── */
+
+.panel-sub {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.identities-panel { margin-top: 18px; }
+
+.identity-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.identity-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  background: var(--panel-strong);
+}
+
+.identity-card.has-problem { border-color: oklch(67% 0.19 28 / 0.5); }
+
+.identity-card header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.identity-card h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.identity-card dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.identity-card dl div {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.identity-card dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.identity-card dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 0.84rem;
+}
+
+.identity-card details summary {
+  cursor: pointer;
+  color: var(--soft);
+  font-size: 0.86rem;
+}
+
+.identity-card details ul { margin-top: 8px; }
+
+.identity-card details li,
+.problems li {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 0.8rem;
+}
+
+.problems {
+  display: grid;
+  gap: 6px;
+}
+
+.problems li { color: var(--soft); }
+.problems li.is-fatal { color: var(--red); }
+
+.fixes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  padding: 5px 8px;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.copy-btn code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.78rem;
+}
+
+.copy-btn span {
+  color: var(--forge);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.copy-btn:hover,
+.copy-btn:focus-visible { border-color: var(--forge); }
+
+.copy-btn:focus-visible,
+.identity-card summary:focus-visible {
+  outline: 2px solid var(--forge);
+  outline-offset: 2px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.chip {
+  display: inline-block;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 1px 8px;
+  color: var(--soft);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.chip-identity { color: var(--blue); border-color: oklch(68% 0.13 246 / 0.45); }
+.chip-default { color: var(--green); border-color: oklch(72% 0.15 157 / 0.45); }
+.layer-judge .chip-layer { color: oklch(78% 0.14 85); border-color: oklch(74% 0.14 85 / 0.45); }
+.layer-sandbox .chip-layer { color: var(--blue); }
+.layer-rule .chip-layer { color: var(--red); }
+
+.decision-row { grid-template-columns: 138px 110px 170px minmax(0, 1fr); }
+.decision-row p { display: grid; gap: 3px; margin: 0; }
+.decision-row b { overflow-wrap: anywhere; }
+.decision-row .scores { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; }
+.kind-judge_override strong { color: oklch(78% 0.14 85); }
+.override-who { color: var(--soft); }
+
+.empty-state .copy-btn { margin-top: 8px; justify-self: start; }
+
+@media (max-width: 980px) {
+  .decision-row { grid-template-columns: 1fr; }
+}

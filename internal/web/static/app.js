@@ -3,11 +3,12 @@ const state = {
   syncTimer: null,
   lastSync: null,
   events: [],
+  decisions: [],
   filters: {
     query: '',
     kind: '',
-    rule: '',
-    source: '',
+    layer: '',
+    identity: '',
   },
 };
 
@@ -17,13 +18,38 @@ const labels = {
   deny_read: 'protected reads',
   deny_exec: 'blocked commands',
   allow_net: 'network boundary',
+  judge: 'judge verdicts',
 };
 
 const colors = {
   deny_read: 'oklch(68% 0.13 246)',
   deny_exec: 'oklch(67% 0.19 28)',
   allow_net: 'oklch(72% 0.15 157)',
+  judge: 'oklch(74% 0.14 85)',
 };
+
+// kindLabel turns a decision into the short word a person would use.
+function kindLabel(d) {
+  switch (d.kind) {
+    case 'judge_decision':
+      if (d.outcome === 'ask') return 'judge asked you';
+      if (d.outcome === 'deny') return 'judge denied';
+      return 'judge: no objection';
+    case 'judge_override':
+      if ((d.reason || '').startsWith('session started with --judge=off')) return 'judge off (session)';
+      if ((d.reason || '').startsWith('allow-once granted')) return 'allow-once granted';
+      return 'allowed once';
+    case 'judge_fallback': return 'judge fallback';
+    default: return 'blocked';
+  }
+}
+
+// byLabel names who decided in plain words.
+function byLabel(by) {
+  if (by === 'rules') return 'local rules';
+  if (by.startsWith('clef') || by === 'jev') return `${by} model`;
+  return by.replace('_', ' ');
+}
 
 function text(selector, value) {
   const el = document.querySelector(selector);
@@ -152,48 +178,53 @@ function renderLatest(event) {
   `;
 }
 
-function renderEvents(events) {
+function renderEvents(decisions) {
   const el = document.querySelector('[data-list="events"]');
   if (!el) return;
-  if (!events || !events.length) {
+  if (!decisions || !decisions.length) {
     const hasFilters = Object.values(state.filters).some(Boolean);
     const message = hasFilters
-      ? 'No events match the active filters.'
+      ? 'No decisions match the active filters.'
       : '`aigate run -- ...` will start populating this view.';
-    el.innerHTML = `<div class="empty-state"><strong>No audit events shown.</strong><span>${escapeHtml(message)}</span></div>`;
-    updateFilterCount(0, state.events.length);
+    el.innerHTML = `<div class="empty-state"><strong>No decisions shown.</strong><span>${escapeHtml(message)}</span></div>`;
+    updateFilterCount(0, state.decisions.length);
     return;
   }
-  el.innerHTML = events.map((event, index) => `
-    <article class="event-row rule-${escapeHtml(event.rule || '')}" style="animation-delay:${Math.min(index * 24, 220)}ms">
-      <time>${formatTime(event.time)}</time>
-      <strong>${escapeHtml(event.kind || '')}</strong>
-      <span>${escapeHtml(event.rule || event.source || '')}</span>
+  el.innerHTML = decisions.map((d, index) => {
+    const scores = d.scores ? 'model scores (0–1): ' + Object.entries(d.scores)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k.replace('action_', 'chose ')} ${v}`).join(' · ') : '';
+    const who = d.kind === 'judge_override'
+      ? `<small class="override-who">by ${escapeHtml(d.os_user || 'unknown user')}${d.call_id ? ` · call ${escapeHtml(d.call_id)}` : ''}</small>` : '';
+    return `
+    <article class="event-row decision-row layer-${escapeHtml(d.layer || '')} kind-${escapeHtml(d.kind || '')}" style="animation-delay:${Math.min(index * 24, 220)}ms">
+      <time datetime="${escapeHtml(d.time || '')}">${formatTime(d.time)}</time>
+      <strong>${escapeHtml(kindLabel(d))}</strong>
+      <span class="chips">
+        <span class="chip chip-layer" title="layer that decided">${escapeHtml(d.layer || '')}</span>
+        ${d.identity ? `<span class="chip chip-identity" title="identity (account)">${escapeHtml(d.identity)}</span>` : ''}
+        ${d.by ? `<span class="chip" title="decided by">${escapeHtml(byLabel(d.by))}</span>` : ''}
+      </span>
       <p>
-        <b>${escapeHtml(event.command || event.detail || '')}</b>
-        ${event.detail ? `<small>${escapeHtml(event.detail)}</small>` : ''}
+        <b>${escapeHtml(d.what || d.reason || '')}</b>
+        ${d.what && d.reason ? `<small>${escapeHtml(d.reason)}</small>` : ''}
+        ${scores ? `<small class="scores">${escapeHtml(scores)}</small>` : ''}
+        ${who}
       </p>
-    </article>
-  `).join('');
-  updateFilterCount(events.length, state.events.length);
+    </article>`;
+  }).join('');
+  updateFilterCount(decisions.length, state.decisions.length);
 }
 
 function applyFilters() {
   const query = state.filters.query.toLowerCase();
-  const filtered = state.events.filter((event) => {
-    if (state.filters.kind && event.kind !== state.filters.kind) return false;
-    if (state.filters.rule && event.rule !== state.filters.rule) return false;
-    if (state.filters.source && event.source !== state.filters.source) return false;
+  const filtered = state.decisions.filter((d) => {
+    if (state.filters.kind && d.kind !== state.filters.kind) return false;
+    if (state.filters.layer && d.layer !== state.filters.layer) return false;
+    if (state.filters.identity && d.identity !== state.filters.identity) return false;
     if (!query) return true;
-    const haystack = [
-      event.kind,
-      event.rule,
-      event.source,
-      event.command,
-      event.detail,
-      event.work_dir,
-    ].filter(Boolean).join(' ').toLowerCase();
-    return haystack.includes(query);
+    return [d.kind, d.layer, d.identity, d.by, d.what, d.reason, d.work_dir, d.os_user]
+      .filter(Boolean).join(' ').toLowerCase().includes(query);
   });
   renderEvents(filtered);
 }
@@ -204,46 +235,99 @@ function updateFilterCount(shown, total) {
   el.textContent = `${shown} shown / ${total} total`;
 }
 
-function renderSourceOptions(events) {
-  const el = document.querySelector('[data-filter="source"]');
+function renderIdentityOptions(identities) {
+  const el = document.querySelector('[data-filter="identity"]');
   if (!el) return;
   const current = el.value;
-  const sources = [...new Set(events.map((event) => event.source).filter(Boolean))].sort();
-  el.innerHTML = '<option value="">Any source</option>' + sources.map((source) => (
-    `<option value="${escapeHtml(source)}">${escapeHtml(source)}</option>`
+  const names = [...new Set([...identities.map((i) => i.name), ...state.decisions.map((d) => d.identity)].filter(Boolean))].sort();
+  el.innerHTML = '<option value="">Any identity</option>' + names.map((n) => (
+    `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`
   )).join('');
-  if (sources.includes(current)) {
-    el.value = current;
-  } else {
-    state.filters.source = '';
+  if (names.includes(current)) el.value = current;
+  else state.filters.identity = '';
+}
+
+function copyButton(command) {
+  return `<button type="button" class="copy-btn" data-copy="${escapeHtml(command)}" aria-label="Copy: ${escapeHtml(command)}"><code>${escapeHtml(command)}</code><span aria-hidden="true">copy</span></button>`;
+}
+
+function renderIdentities(data) {
+  const el = document.querySelector('[data-list="identities"]');
+  if (!el) return;
+  const ids = data.identities || [];
+  if (!ids.length) {
+    el.innerHTML = `<div class="empty-state"><strong>No identities yet.</strong><span>Each identity keeps its own Claude and GitHub logins, git author and ssh key.</span>${copyButton('aigate identity add work')}</div>`;
+    return;
   }
+  el.innerHTML = ids.map((i) => {
+    const problems = (i.problems || []).map((p) => `
+      <li class="${p.fatal ? 'is-fatal' : ''}">${escapeHtml(p.message)}${p.fix ? copyButton(p.fix) : ''}</li>`).join('');
+    return `
+    <article class="identity-card${(i.problems || []).some((p) => p.fatal) ? ' has-problem' : ''}">
+      <header>
+        <h3>${escapeHtml(i.name)}</h3>
+        ${i.default ? '<span class="chip chip-default">default</span>' : ''}
+      </header>
+      <dl>
+        <div><dt>git</dt><dd>${escapeHtml(i.git || '—')}</dd></div>
+        <div><dt>claude</dt><dd>${escapeHtml(i.claude_dir)}</dd></div>
+        <div><dt>github</dt><dd>${escapeHtml(i.gh_dir)}</dd></div>
+        <div><dt>ssh key</dt><dd>${escapeHtml(i.ssh_key || 'none configured')}</dd></div>
+        <div><dt>folders</dt><dd>${escapeHtml((i.folders || []).join(', ') || 'none bound')}</dd></div>
+        <div><dt>last used</dt><dd>${i.last_used ? `${relativeTime(i.last_used)} <small>(${formatTime(i.last_used)})</small>` : 'never'}</dd></div>
+      </dl>
+      <details>
+        <summary>What a session can reach (${(i.reach || []).length})</summary>
+        <ul>${(i.reach || []).map((r) => `<li>${escapeHtml(r)}</li>`).join('')}</ul>
+      </details>
+      ${problems ? `<ul class="problems" aria-label="Problems">${problems}</ul>` : ''}
+      <div class="fixes">${(i.fixes || []).map(copyButton).join('')}</div>
+    </article>`;
+  }).join('');
+}
+
+async function getJSON(url) {
+  const res = await fetch(url, { headers: { accept: 'application/json' } });
+  if (!res.ok) throw new Error(`${url}: ${res.status}`);
+  return res.json();
 }
 
 async function refresh() {
   const button = document.querySelector('[data-action="refresh"]');
   button?.classList.add('is-syncing');
   try {
-    const res = await fetch('/api/overview', { headers: { accept: 'application/json' } });
-    if (!res.ok) return;
-    const data = await res.json();
+    const [data, decisions, identities] = await Promise.all([
+      getJSON('/api/overview'), getJSON('/api/decisions'), getJSON('/api/identities'),
+    ]);
     countUp('[data-field="blocked-total"]', data.counters.blocked_total);
     countUp('[data-field="blocked-today"]', data.counters.blocked_today);
     countUp('[data-field="runs-total"]', data.counters.runs_total);
-    text('[data-field="rule-read"]', data.rules.deny_read.length);
-    text('[data-field="rule-exec"]', data.rules.deny_exec.length);
-    text('[data-field="rule-net"]', data.rules.allow_net.length);
+    text('[data-field="rule-read"]', (data.rules.deny_read || []).length);
+    text('[data-field="rule-exec"]', (data.rules.deny_exec || []).length);
+    text('[data-field="rule-net"]', (data.rules.allow_net || []).length);
     text('[data-field="rule-scope"]', (data.rules.allowed_paths || []).length);
-    list('[data-list="deny-read"]', data.rules.deny_read, 'none');
-    list('[data-list="deny-exec"]', data.rules.deny_exec, 'none');
-    list('[data-list="allow-net"]', data.rules.allow_net, 'all outbound allowed');
+    list('[data-list="deny-read"]', data.rules.deny_read || [], 'none');
+    list('[data-list="deny-exec"]', data.rules.deny_exec || [], 'none');
+    list('[data-list="allow-net"]', data.rules.allow_net || [], 'all outbound allowed');
     list('[data-list="allowed-paths"]', data.rules.allowed_paths, 'scope off — $HOME fully accessible');
     renderBars(data.counters);
     renderLatest(data.last_blocked);
     state.events = data.events || [];
     renderSpark(state.events);
-    renderSourceOptions(state.events);
+    state.decisions = decisions.decisions || [];
+    renderIdentities(identities);
+    renderIdentityOptions(identities.identities || []);
     applyFilters();
     markSynced();
+  } catch (err) {
+    console.error('aigate dashboard refresh failed:', err);
+    const note = document.querySelector('[data-field="sync-note"]');
+    if (note) {
+      note.textContent = err instanceof TypeError && /fetch/i.test(err.message)
+        ? 'sync failed — is aigate serve still running?'
+        : `display error: ${err.message} (see browser console)`;
+      note.classList.add('is-stale');
+    }
   } finally {
     button?.classList.remove('is-syncing');
   }
@@ -261,6 +345,15 @@ function formatTime(value) {
   });
 }
 
+function relativeTime(value) {
+  const secs = Math.round((Date.now() - new Date(value).getTime()) / 1000);
+  if (!Number.isFinite(secs)) return '';
+  if (secs < 60) return 'just now';
+  if (secs < 3600) return `${Math.round(secs / 60)} min ago`;
+  if (secs < 86400) return `${Math.round(secs / 3600)} h ago`;
+  return `${Math.round(secs / 86400)} days ago`;
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -272,7 +365,7 @@ function escapeHtml(value) {
 
 document.querySelector('[data-action="refresh"]')?.addEventListener('click', refresh);
 document.querySelector('[data-action="clear-filters"]')?.addEventListener('click', () => {
-  state.filters = { query: '', kind: '', rule: '', source: '' };
+  state.filters = { query: '', kind: '', layer: '', identity: '' };
   document.querySelectorAll('[data-filter]').forEach((control) => {
     control.value = '';
   });
@@ -284,11 +377,32 @@ document.querySelectorAll('[data-filter]').forEach((control) => {
     applyFilters();
   });
 });
+document.addEventListener('click', async (event) => {
+  const btn = event.target.closest('[data-copy]');
+  if (!btn) return;
+  const value = btn.dataset.copy;
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch {
+    const area = document.createElement('textarea');
+    area.value = value;
+    document.body.append(area);
+    area.select();
+    document.execCommand('copy');
+    area.remove();
+  }
+  const label = btn.querySelector('span');
+  if (label) {
+    label.textContent = 'copied';
+    setTimeout(() => { label.textContent = 'copy'; }, 1400);
+  }
+});
 renderBars({
   by_rule: {
     deny_read: 0,
     deny_exec: 0,
     allow_net: 0,
+    judge: 0,
   },
 });
 refresh();

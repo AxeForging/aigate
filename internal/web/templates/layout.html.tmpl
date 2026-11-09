@@ -109,11 +109,25 @@
       </article>
     </section>
 
+    <section class="panel identities-panel" aria-labelledby="identities-title">
+      <div class="panel-head">
+        <div>
+          <p class="panel-label">identities</p>
+          <h2 id="identities-title">Who each session runs as</h2>
+        </div>
+        <span class="path-note">a session only sees its own identity's logins</span>
+      </div>
+      <div class="identity-grid" data-list="identities" aria-live="polite">
+        <div class="empty-state"><strong>Loading identities…</strong></div>
+      </div>
+    </section>
+
     <section class="panel events-panel">
       <div class="panel-head">
         <div>
           <p class="panel-label">timeline</p>
           <h2>Recent decisions</h2>
+          <p class="panel-sub">Every block, judge verdict, override and fallback — and who overrode what, and why.</p>
         </div>
         <span class="path-note">config: {{.ConfigPath}}</span>
       </div>
@@ -125,24 +139,27 @@
         <label>
           <span>Event</span>
           <select data-filter="kind">
-            <option value="">All events</option>
-            <option value="blocked">Blocked only</option>
-            <option value="run_started">Runs only</option>
+            <option value="">All decisions</option>
+            <option value="blocked">Sandbox / rule blocks</option>
+            <option value="judge_decision">Judge verdicts</option>
+            <option value="judge_override">Overrides</option>
+            <option value="judge_fallback">Judge fallbacks</option>
           </select>
         </label>
         <label>
-          <span>Rule</span>
-          <select data-filter="rule">
-            <option value="">Any rule</option>
-            <option value="deny_read">Deny read</option>
-            <option value="deny_exec">Deny exec</option>
-            <option value="allow_net">Network</option>
+          <span>Layer</span>
+          <select data-filter="layer">
+            <option value="">Any layer</option>
+            <option value="sandbox">Sandbox</option>
+            <option value="rule">Rule</option>
+            <option value="identity">Identity</option>
+            <option value="judge">Judge</option>
           </select>
         </label>
         <label>
-          <span>Source</span>
-          <select data-filter="source">
-            <option value="">Any source</option>
+          <span>Identity</span>
+          <select data-filter="identity">
+            <option value="">Any identity</option>
           </select>
         </label>
         <button type="button" data-action="clear-filters">Clear</button>

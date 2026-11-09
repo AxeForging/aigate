@@ -84,6 +84,8 @@ func (s *Server) routes() {
 	s.mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/api/overview", s.handleOverview)
+	s.mux.HandleFunc("/api/decisions", s.handleDecisions)
+	s.mux.HandleFunc("/api/identities", s.handleIdentities)
 }
 
 type overview struct {
@@ -124,7 +126,7 @@ func (s *Server) buildOverview() overview {
 			AllowedPaths: []string{},
 		},
 		Counters: countersOverview{
-			ByRule:   map[string]int{"deny_read": 0, "deny_exec": 0, "allow_net": 0},
+			ByRule:   map[string]int{"deny_read": 0, "deny_exec": 0, "allow_net": 0, "judge": 0},
 			BySource: map[string]int{},
 		},
 	}
@@ -135,7 +137,9 @@ func (s *Server) buildOverview() overview {
 	}
 	events, err := s.auditSvc.Recent(200)
 	if err == nil {
-		data.Events = events
+		for _, e := range events {
+			data.Events = append(data.Events, services.MaskEvent(e))
+		}
 	}
 	today := time.Now().Format("2006-01-02")
 	for _, event := range data.Events {
@@ -143,14 +147,18 @@ func (s *Server) buildOverview() overview {
 			data.Counters.RunsTotal++
 			continue
 		}
-		if event.Kind != "blocked" {
+		judged := event.Kind == "judge_decision" && (event.Meta["outcome"] == "deny" || event.Meta["outcome"] == "ask")
+		if event.Kind != "blocked" && !judged {
 			continue
 		}
 		data.Counters.BlockedTotal++
 		if event.Time.Format("2006-01-02") == today {
 			data.Counters.BlockedToday++
 		}
-		if event.Rule != "" {
+		switch {
+		case judged:
+			data.Counters.ByRule["judge"]++
+		case event.Rule != "":
 			data.Counters.ByRule[event.Rule]++
 		}
 		if event.Source != "" {
@@ -171,10 +179,11 @@ func (s *Server) buildOverview() overview {
 }
 
 func rulesFromConfig(cfg domain.Config) rulesOverview {
+	// Non-nil copies: empty lists must encode as [], not null.
 	return rulesOverview{
-		DenyRead:     append([]string(nil), cfg.DenyRead...),
-		DenyExec:     append([]string(nil), cfg.DenyExec...),
-		AllowNet:     append([]string(nil), cfg.AllowNet...),
-		AllowedPaths: append([]string(nil), cfg.AllowedPaths...),
+		DenyRead:     append([]string{}, cfg.DenyRead...),
+		DenyExec:     append([]string{}, cfg.DenyExec...),
+		AllowNet:     append([]string{}, cfg.AllowNet...),
+		AllowedPaths: append([]string{}, cfg.AllowedPaths...),
 	}
 }

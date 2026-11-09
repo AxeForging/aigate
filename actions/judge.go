@@ -60,7 +60,13 @@ func (a *JudgeAction) Hook(c *cli.Context) error {
 	if !settings.Enabled {
 		return nil
 	}
-	broker := &services.JudgeBroker{Chain: services.BuildJudgeChain(settings),
+	// Outside `aigate run`, attribute decisions to the identity bound to the
+	// hook's folder, so the dashboard can filter them per account.
+	profile := domain.SandboxProfile{WorkDir: in.Cwd}
+	if id, err := services.NewIdentityService().Resolve(cfg, "", in.Cwd); err == nil {
+		profile.Identity = id
+	}
+	broker := &services.JudgeBroker{Chain: services.BuildJudgeChain(settings), Profile: profile,
 		Audit: services.NewAuditService(a.configSvc), AllowOnce: allowOnceStore(a.configSvc), Warn: a.stderr}
 	a.emit(broker.Handle(raw))
 	return nil
