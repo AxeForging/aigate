@@ -146,6 +146,7 @@ func TestClefJudge_Errors(t *testing.T) {
 }
 
 func TestBuildJudgeChain_RegistersClef(t *testing.T) {
+	clefWithEnv(t) // credentials set
 	c := BuildJudgeChain(DefaultJudgeSettings())
 	if c.Rules == nil || len(c.Models) != 2 || c.Models[0].Name() != JudgeClefFlash || c.Models[1].Name() != JudgeClef {
 		t.Errorf("default chain should be rules → clef-flash → clef, got %+v", c)
@@ -154,5 +155,19 @@ func TestBuildJudgeChain_RegistersClef(t *testing.T) {
 	off.Chain = []string{JudgeRules, JudgeOff}
 	if c := BuildJudgeChain(off); c.Rules != nil || len(c.Models) != 0 {
 		t.Error("off must disable the whole chain")
+	}
+}
+
+func TestBuildJudgeChain_SkipsModelsWithoutCredentials(t *testing.T) {
+	t.Setenv("AIGATE_CF_ACCOUNT", "")
+	t.Setenv("AIGATE_CF_TOKEN", "")
+	c := BuildJudgeChain(DefaultJudgeSettings())
+	if c.Rules == nil || len(c.Models) != 0 || len(c.Skipped) != 2 || !strings.Contains(c.Skipped[0], "set AIGATE_CF_ACCOUNT") {
+		t.Errorf("models without credentials must be skipped with a reason, got %+v", c)
+	}
+	s := DefaultJudgeSettings()
+	s.Chain = []string{JudgeRules, JudgeJev}
+	if c := BuildJudgeChain(s); len(c.Skipped) != 1 || !strings.Contains(c.Skipped[0], "jev: not available yet") {
+		t.Errorf("unregistered adapters must be listed as skipped: %+v", c.Skipped)
 	}
 }

@@ -179,11 +179,25 @@ func main() {
 		{
 			Name:        "judge",
 			Usage:       "Claude Code hook: judge a tool call (reads the hook payload on stdin)",
-			Description: "Extra layer on top of the sandbox: it can deny or ask, never allow.\nConfigure under judge: in ~/.aigate/config.yaml (off by default).\n\nExamples:\n   aigate judge < payload.json             # as a PreToolUse/PostToolUse hook\n   aigate judge --dry-run < payload.json   # show what a model would receive; sends nothing",
+			Description: "Extra layer on top of the sandbox: it can deny or ask, never allow.\nConfigure under judge: in ~/.aigate/config.yaml (off by default).\n\nExamples:\n   aigate judge install                    # one-time: add the hooks to Claude Code, turn the judge on\n   aigate judge < payload.json             # as a PreToolUse/PostToolUse hook\n   aigate judge --dry-run < payload.json   # show what a model would receive; sends nothing",
 			Flags: []cli.Flag{
 				cli.BoolFlag{Name: "dry-run", Usage: "Print the exact payload a model judge would receive and the local verdict; send nothing"},
 			},
 			Action: judgeAction.Hook,
+			Subcommands: []cli.Command{
+				{
+					Name:   "install",
+					Usage:  "Add the judge hooks to Claude Code (identity active here, or ~/.claude) and turn the judge on",
+					Flags:  []cli.Flag{identityFlag},
+					Action: judgeAction.Install,
+				},
+				{
+					Name:   "uninstall",
+					Usage:  "Remove exactly what install added (restores the file if unchanged since)",
+					Flags:  []cli.Flag{identityFlag},
+					Action: judgeAction.Uninstall,
+				},
+			},
 		},
 		{
 			Name:   "whoami",

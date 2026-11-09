@@ -57,6 +57,14 @@ func init() {
 
 func (c *ClefJudge) Name() string { return c.model }
 
+// Available reports whether the credentials this judge needs are set.
+func (c *ClefJudge) Available() error {
+	if os.Getenv(c.accountEnv) == "" || os.Getenv(c.tokenEnv) == "" {
+		return fmt.Errorf("set %s and %s", c.accountEnv, c.tokenEnv)
+	}
+	return nil
+}
+
 type clefAnswer struct {
 	Noul          *float64           `json:"noul"`
 	Choice        string             `json:"choice"`

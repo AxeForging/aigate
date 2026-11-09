@@ -16,7 +16,7 @@ import (
 )
 
 // judgeHowToAllow is shown with every judge block.
-const judgeHowToAllow = "set judge.enabled: false in ~/.aigate/config.yaml (the sandbox still applies)"
+const judgeHowToAllow = "aigate judge uninstall, or set judge.enabled: false in ~/.aigate/config.yaml (the sandbox still applies)"
 
 type JudgeAction struct {
 	configSvc *services.ConfigService
@@ -115,7 +115,8 @@ func startJudgeBroker(configSvc *services.ConfigService, global *domain.Config, 
 		return noop, fmt.Errorf("judge: %w", err)
 	}
 	sock := filepath.Join(dir, "judge.sock")
-	broker := &services.JudgeBroker{Chain: services.BuildJudgeChain(settings),
+	chain := services.BuildJudgeChain(settings)
+	broker := &services.JudgeBroker{Chain: chain,
 		Audit: services.NewAuditService(configSvc), Profile: *profile, HowToAllow: judgeHowToAllow,
 		Warn: os.Stderr, WarnOnce: true}
 	stopServe, err := services.ServeJudgeBroker(sock, broker)
@@ -125,6 +126,9 @@ func startJudgeBroker(configSvc *services.ConfigService, global *domain.Config, 
 	}
 	profile.JudgeSocket = sock
 	fmt.Fprintf(os.Stderr, "[aigate] judge: on (%s)\n", strings.Join(settings.Chain, " → "))
+	if len(chain.Skipped) > 0 {
+		fmt.Fprintf(os.Stderr, "[aigate] judge: skipped %s — local rules still run\n", strings.Join(chain.Skipped, "; "))
+	}
 	return func() {
 		stopServe()
 		_ = os.RemoveAll(dir)
