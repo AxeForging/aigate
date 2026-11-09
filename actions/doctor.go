@@ -119,7 +119,7 @@ func linuxChecks() []services.Check {
 	checks := []services.Check{
 		tool("bwrap", "sandbox isolation (mount, pid, user namespaces)", services.StatusWarn,
 			"sudo dnf install bubblewrap   # or: sudo apt install bubblewrap"),
-		tool("slirp4netns", "network filtering for allow_net", services.StatusWarn,
+		tool("slirp4netns", "own network per session (hides local services; needed for allow_net)", services.StatusWarn,
 			"sudo dnf install slirp4netns   # or: sudo apt install slirp4netns"),
 		tool("ip6tables", "IPv6 egress filtering (optional; IPv4-only without it)", services.StatusNote,
 			"sudo dnf install iptables   # or: sudo apt install iptables"),

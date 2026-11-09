@@ -21,6 +21,10 @@ var (
 )
 
 func main() {
+	// Last step inside a Linux sandbox: drop capabilities, exec the command.
+	if len(os.Args) > 1 && os.Args[1] == services.SandboxExecArg {
+		os.Exit(services.SandboxExec(os.Args[2:]))
+	}
 	helpers.SetupLogger("info")
 
 	platform := services.DetectPlatform()
@@ -226,8 +230,8 @@ func main() {
 			Name:        "run",
 			Aliases:     []string{"r"},
 			Usage:       "Run a command inside the AI sandbox (use -- before command)",
-			Description: "Examples:\n   aigate run -- claude\n   aigate run -- bash -c \"npm test\"\n   aigate run --allow-path ~/notes -- claude   # extra scope path, this session only\n   aigate run --identity work -- claude        # only work's logins are visible",
-			Flags:       []cli.Flag{verboseFlag, configFlag, allowPathFlag, identityFlag, judgeModeFlag},
+			Description: "Examples:\n   aigate run -- claude\n   aigate run -- bash -c \"npm test\"\n   aigate run --allow-path ~/notes -- claude   # extra scope path, this session only\n   aigate run --identity work -- claude        # only work's logins are visible\n   aigate run --port 3000 -- claude            # open the agent's dev server at localhost:3000",
+			Flags:       []cli.Flag{verboseFlag, configFlag, allowPathFlag, identityFlag, judgeModeFlag, portFlag},
 			Action:      runAction.Execute,
 		},
 		{

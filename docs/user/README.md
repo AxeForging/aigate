@@ -15,7 +15,7 @@ Unlike application-level restrictions that can be bypassed, aigate uses kernel-e
 | | Linux | macOS |
 |---|---|---|
 | **Recommended** | `bwrap` (Bubblewrap) | None (uses built-in sandbox-exec) |
-| **For network filtering** | `slirp4netns` | None (uses built-in Seatbelt) |
+| **For network isolation** | `slirp4netns` | None (uses built-in Seatbelt) |
 | **For IPv6 filtering** | `ip6tables` (optional — sandbox is v4-only without it) | None |
 | **For persistent ACLs** | `setfacl` (usually pre-installed) | None |
 
@@ -36,7 +36,7 @@ sudo pacman -S bubblewrap
 
 Without `bwrap`, aigate falls back to `unshare`-based namespaces (still functional, but shell-script-based overrides instead of declarative bind mounts).
 
-### Install slirp4netns (required for `allow_net`, Linux)
+### Install slirp4netns (recommended; required for `allow_net`, Linux)
 
 ```sh
 # Fedora / RHEL
@@ -49,7 +49,9 @@ sudo apt install slirp4netns
 sudo pacman -S slirp4netns
 ```
 
-If `slirp4netns` is not installed, aigate logs a warning and runs without network filtering.
+With `slirp4netns`, every session gets its own network: services that listen only on your machine's `127.0.0.1` (debuggers, local databases, dev tools) and desktop sockets (X11) are out of reach, with or without `allow_net`.
+
+Without it, a session with `allow_net` set **won't start** (the rules can't be enforced, so aigate says so instead of running unfiltered). A session without `allow_net` runs on your network and prints a warning.
 
 IPv6 egress is filtered when `ip6tables` is installed (usually shipped with the `iptables` package) and the kernel has IPv6 enabled. Otherwise the sandbox runs IPv4-only and IPv6 traffic is unreachable from inside.
 
@@ -653,11 +655,23 @@ Two layers working together for defense-in-depth:
 
 ### Network isolation
 
-Restricts outbound connections to domains listed in `allow_net`:
+On Linux every session gets its own network namespace (needs `slirp4netns`). The agent reaches the internet, but not services bound to your machine's `127.0.0.1` or abstract unix sockets such as X11. `allow_net` adds a firewall on top: only the listed hosts are reachable.
 
-- **Linux (bwrap path)**: bwrap creates a network namespace via `--unshare-net`. Go reads bwrap's `--info-fd` to get the child PID, then launches `slirp4netns --configure` from host-side to attach user-mode networking. Inside the sandbox, `iptables` OUTPUT rules resolve each `allow_net` hostname and restrict egress. When `ip6tables` is available and the kernel has IPv6 enabled, slirp4netns is launched with `--enable-ipv6` and a parallel `ip6tables` filter is installed. No root needed.
-- **Linux (unshare fallback)**: Two-layer `unshare` — outer creates user namespace, inner creates network namespace. `slirp4netns` runs inside the user namespace. Same `iptables`/`ip6tables` filtering.
-- **macOS**: `sandbox-exec` Seatbelt profiles with `(deny network-outbound)` and per-host `(allow network-outbound (remote ip ...))` rules. Kernel-enforced via Sandbox.kext.
+The firewall and mounts are set up with privileges that the agent's command never gets: the last setup step drops every capability (`no_new_privs`, empty capability sets) before starting it, so the agent can't flush the firewall or unmount a hidden file.
+
+**Opening a dev server the agent starts.** Publish its port:
+
+```sh
+aigate run --port 3000 -- claude     # then open http://localhost:3000 on your machine
+```
+
+Repeat `--port` for more. Servers that listen only on localhost inside the sandbox (the usual default) work too. Logins that redirect your browser to a localhost callback can't reach the sandbox; tools like `claude` and `gh` then show a code to paste instead.
+
+How each platform does it:
+
+- **Linux (bwrap path)**: bwrap creates a network namespace via `--unshare-net`. Go reads bwrap's `--info-fd` to get the child PID, then launches `slirp4netns --disable-host-loopback --configure` from host-side to attach user-mode networking. Inside the sandbox, `iptables` OUTPUT rules resolve each `allow_net` hostname and restrict egress. When `ip6tables` is available and the kernel has IPv6 enabled, slirp4netns is launched with `--enable-ipv6` and a parallel `ip6tables` filter is installed. No root needed.
+- **Linux (unshare fallback)**: Two-layer `unshare` — outer creates user namespace, inner creates network namespace. `slirp4netns` runs inside the user namespace. Same `iptables`/`ip6tables` filtering. `--port` needs bwrap.
+- **macOS**: `sandbox-exec` Seatbelt profiles with `(deny network-outbound)` and per-host `(allow network-outbound (remote ip ...))` rules. Kernel-enforced via Sandbox.kext. The network is shared with your Mac, so `--port` isn't needed (and localhost services stay reachable when `allow_net` is empty).
 
 **Linux**:
 
@@ -717,8 +731,11 @@ If you see "Failed to apply ACLs", the AI agent group may not exist yet. Run `su
 ### "aigate not initialized"
 Run `sudo aigate setup` to create the sandbox group and user, then `aigate init` to create the default config.
 
-### "slirp4netns not found" warning
-Install `slirp4netns` for network filtering on Linux (see [Prerequisites](#prerequisites)). Without it, `allow_net` rules are ignored and the sandboxed process has unrestricted network access.
+### "slirp4netns is missing" / "shares your network"
+Install `slirp4netns` (see [Prerequisites](#prerequisites)). Without it, sessions with `allow_net` refuse to start, and sessions without it share your network (local services and desktop sockets reachable).
+
+### My dev server / local tool isn't reachable
+The sandbox has its own network. To open a server the agent starts, run with `--port PORT`. Services running on your machine (outside the sandbox) on `127.0.0.1` aren't reachable from inside; start them inside the same `aigate run` session instead.
 
 ### Allowed hosts still blocked
 If hosts in `allow_net` are being rejected, DNS inside the sandbox may not have been ready in time. Check that `slirp4netns` is installed and working. Run `aigate doctor` to verify your setup, or use `AIGATE_LOG_LEVEL=debug` for detailed output.

@@ -66,12 +66,13 @@ end note
 
 note right of proc
   **Dispatch logic:**
-  AllowNet + slirp4netns found
-  -> runWithNetFilter()
+  slirp4netns found
+  -> own network namespace
+     (+ firewall when AllowNet)
   AllowNet + no slirp4netns
-  -> warn, run unrestricted
-  No AllowNet
-  -> run unrestricted
+  -> refuse to start (block message)
+  No AllowNet + no slirp4netns
+  -> warn, share host network
 end note
 
 @enduml

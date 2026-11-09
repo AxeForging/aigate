@@ -333,6 +333,9 @@ func TestResolveAllowedIPs(t *testing.T) {
 	})
 }
 
+// testStage is a staged aigate binary for script-building tests.
+var testStage = sandboxExecStage{src: "/opt/aigate", dst: "/tmp/aigate-exec-test"}
+
 func TestBuildNetFilterScript(t *testing.T) {
 	profile := domain.SandboxProfile{
 		Config: domain.Config{
@@ -346,7 +349,7 @@ func TestBuildNetFilterScript(t *testing.T) {
 			[]string{"api.anthropic.com", "1.2.3.4"},
 			[]string{"8.8.8.8"},
 			nil, false,
-			profile, "echo", []string{"hello"},
+			profile, testStage, "echo", []string{"hello"},
 		)
 		// Hostnames should be resolved inside the namespace via getent ahostsv4
 		if !strings.Contains(script, "getent ahostsv4 \"api.anthropic.com\"") {
@@ -366,7 +369,7 @@ func TestBuildNetFilterScript(t *testing.T) {
 			[]string{"example.com"},
 			[]string{"8.8.8.8", "1.1.1.1"},
 			nil, false,
-			profile, "echo", []string{"hello"},
+			profile, testStage, "echo", []string{"hello"},
 		)
 		if !strings.Contains(script, "iptables -A OUTPUT -p udp --dport 53 -j ACCEPT") {
 			t.Error("script should allow UDP DNS")
@@ -391,10 +394,10 @@ func TestBuildNetFilterScript(t *testing.T) {
 		// in any sane implementation (current code defers filtering to the caller,
 		// so this test documents the contract).
 		script := buildNetFilterScript(
-			nil,
+			[]string{"example.com"},
 			[]string{"192.168.178.1"}, // post-splitDNSByFamily list
 			nil, false,
-			profile, "echo", nil,
+			profile, testStage, "echo", nil,
 		)
 		// Sanity: v4 rule present.
 		if !strings.Contains(script, "iptables -A OUTPUT -d 192.168.178.1 -j ACCEPT") {
@@ -417,21 +420,21 @@ func TestBuildNetFilterScript(t *testing.T) {
 	})
 
 	t.Run("contains resolv.conf fix", func(t *testing.T) {
-		script := buildNetFilterScript(nil, nil, nil, false, profile, "echo", nil)
+		script := buildNetFilterScript(nil, nil, nil, false, profile, testStage, "echo", nil)
 		if !strings.Contains(script, "nameserver 10.0.2.3") {
 			t.Error("script should set resolv.conf to slirp4netns DNS")
 		}
 	})
 
 	t.Run("contains wait for tap0", func(t *testing.T) {
-		script := buildNetFilterScript(nil, nil, nil, false, profile, "echo", nil)
+		script := buildNetFilterScript(nil, nil, nil, false, profile, testStage, "echo", nil)
 		if !strings.Contains(script, "ip addr show tap0") {
 			t.Error("script should wait for tap0 interface")
 		}
 	})
 
 	t.Run("waits for real DNS before resolving hosts", func(t *testing.T) {
-		script := buildNetFilterScript([]string{"example.com", "other.com"}, nil, nil, false, profile, "echo", nil)
+		script := buildNetFilterScript([]string{"example.com", "other.com"}, nil, nil, false, profile, testStage, "echo", nil)
 		// DNS readiness check should use the FIRST AllowNet host, not localhost
 		dnsWaitIdx := strings.Index(script, "getent ahostsv4 \"example.com\" >/dev/null")
 		if dnsWaitIdx == -1 {
@@ -443,16 +446,46 @@ func TestBuildNetFilterScript(t *testing.T) {
 	})
 
 	t.Run("retries host resolution on failure", func(t *testing.T) {
-		script := buildNetFilterScript([]string{"example.com"}, nil, nil, false, profile, "echo", nil)
+		script := buildNetFilterScript([]string{"example.com"}, nil, nil, false, profile, testStage, "echo", nil)
 		if !strings.Contains(script, "_attempt in 1 2 3") {
 			t.Error("should retry getent resolution")
 		}
 	})
 
 	t.Run("contains target command", func(t *testing.T) {
-		script := buildNetFilterScript(nil, nil, nil, false, profile, "mycommand", []string{"--flag", "value"})
-		if !strings.Contains(script, "exec mycommand --flag value") {
-			t.Errorf("script should contain exec of target command, got:\n%s", script)
+		script := buildNetFilterScript(nil, nil, nil, false, profile, testStage, "mycommand", []string{"--flag", "value"})
+		if !strings.Contains(script, "exec /tmp/aigate-exec-test __sandbox-exec -- mycommand --flag value") {
+			t.Errorf("script should exec the command through the capability drop, got:\n%s", script)
+		}
+	})
+
+	t.Run("goes back into the workdir before exec", func(t *testing.T) {
+		// The shell starts in the workdir as it was before the mounts; without
+		// the cd, relative paths would skip deny_read and scope.
+		script := buildNetFilterScript(nil, nil, nil, false, profile, testStage, "echo", nil)
+		cd := strings.LastIndex(script, "cd /tmp ||")
+		exec := strings.LastIndex(script, "exec /tmp/aigate-exec-test")
+		if cd == -1 || exec == -1 || cd > exec {
+			t.Errorf("script should cd into the workdir right before exec, got:\n%s", script)
+		}
+	})
+
+	t.Run("binds the aigate binary read-only before anything hides it", func(t *testing.T) {
+		script := buildNetFilterScript(nil, nil, nil, false, profile, testStage, "echo", nil)
+		bind := strings.Index(script, "mount --bind /opt/aigate /tmp/aigate-exec-test && mount -o remount,bind,ro /tmp/aigate-exec-test")
+		if bind == -1 || bind > strings.Index(script, "aigate-policy") {
+			t.Errorf("script should bind the binary read-only first, got:\n%s", script)
+		}
+	})
+
+	t.Run("no firewall without allow_net", func(t *testing.T) {
+		// Own namespace (host loopback unreachable) but every host allowed.
+		script := buildNetFilterScript(nil, []string{"8.8.8.8"}, nil, false, profile, testStage, "echo", nil)
+		if strings.Contains(script, "iptables") {
+			t.Errorf("no allow_net should mean no firewall rules, got:\n%s", script)
+		}
+		if !strings.Contains(script, "nameserver 10.0.2.3") {
+			t.Error("DNS must still point at slirp4netns")
 		}
 	})
 
@@ -464,7 +497,7 @@ func TestBuildNetFilterScript(t *testing.T) {
 			[]string{"192.168.178.1"},
 			[]string{"2001:4860:4860::8888"},
 			true,
-			profile, "echo", nil,
+			profile, testStage, "echo", nil,
 		)
 		for _, want := range []string{
 			"ip6tables -A OUTPUT -o lo -j ACCEPT",
@@ -490,7 +523,7 @@ func TestBuildNetFilterScript(t *testing.T) {
 			[]string{"example.com"},
 			[]string{"192.168.178.1"},
 			nil, false,
-			profile, "echo", nil,
+			profile, testStage, "echo", nil,
 		)
 		if strings.Contains(script, "ip6tables") {
 			t.Errorf("script must not contain ip6tables when ipv6Enabled=false, got:\n%s", script)
@@ -563,7 +596,7 @@ func TestBuildOrchestrationScript(t *testing.T) {
 
 	t.Run("runs slirp4netns inside user namespace", func(t *testing.T) {
 		script := buildOrchestrationScript(inner, false)
-		if !strings.Contains(script, "slirp4netns --configure $_SANDBOX_PID tap0") {
+		if !strings.Contains(script, "slirp4netns --disable-host-loopback --configure $_SANDBOX_PID tap0") {
 			t.Error("should launch slirp4netns with sandbox PID")
 		}
 		if strings.Contains(script, "--enable-ipv6") {
@@ -573,7 +606,7 @@ func TestBuildOrchestrationScript(t *testing.T) {
 
 	t.Run("passes --enable-ipv6 to slirp4netns when ipv6Enabled=true", func(t *testing.T) {
 		script := buildOrchestrationScript(inner, true)
-		if !strings.Contains(script, "slirp4netns --enable-ipv6 --configure $_SANDBOX_PID tap0") {
+		if !strings.Contains(script, "slirp4netns --disable-host-loopback --enable-ipv6 --configure $_SANDBOX_PID tap0") {
 			t.Errorf("ipv6Enabled=true should pass --enable-ipv6 to slirp4netns, got:\n%s", script)
 		}
 	})
@@ -861,7 +894,7 @@ func TestBuildNetFilterScript_MountMakeRprivate(t *testing.T) {
 		Config:  domain.Config{},
 		WorkDir: "/tmp",
 	}
-	script := buildNetFilterScript(nil, nil, nil, false, profile, "echo", nil)
+	script := buildNetFilterScript(nil, nil, nil, false, profile, testStage, "echo", nil)
 	if !strings.Contains(script, "mount --make-rprivate /") {
 		t.Error("net filter script should start with mount --make-rprivate /")
 	}
@@ -976,8 +1009,8 @@ func TestRunUnshare_MountMakeRprivate(t *testing.T) {
 		t.Error("mount --make-rprivate should be the first command in the script")
 	}
 	// Verify exec is used before the command
-	if !strings.Contains(shellCmd, "exec echo hello") {
-		t.Error("runUnshare should exec the target command")
+	if !strings.Contains(shellCmd, "__sandbox-exec -- echo hello") {
+		t.Error("runUnshare should exec the target command through the capability drop")
 	}
 }
 
@@ -990,7 +1023,7 @@ func TestBuildNetFilterScript_IncludesExecDeny(t *testing.T) {
 		WorkDir: "/tmp",
 	}
 
-	script := buildNetFilterScript(nil, nil, nil, false, profile, "echo", []string{"hello"})
+	script := buildNetFilterScript(nil, nil, nil, false, profile, testStage, "echo", []string{"hello"})
 	if !strings.Contains(script, "/tmp/.aigate-deny-exec") {
 		t.Error("net filter script should include exec deny overrides")
 	}

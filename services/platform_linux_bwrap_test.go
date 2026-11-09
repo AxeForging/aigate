@@ -5,6 +5,8 @@ package services
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -690,6 +692,8 @@ func TestRunSandboxedDispatch_BwrapPreferredOverUnshare(t *testing.T) {
 	if !hasBwrap() {
 		t.Skip("bwrap not installed; test covers bwrap dispatch path only")
 	}
+	// Without slirp4netns there's no own network namespace: plain bwrap.
+	pathOnly(t, "bwrap")
 	mock := newMockExecutor()
 	p := &LinuxPlatform{exec: mock}
 	profile := domain.SandboxProfile{Config: domain.Config{}, WorkDir: "/tmp"}
@@ -727,7 +731,7 @@ func TestRunSandboxedDispatch_FallsBackToUnshareWhenNoBwrap(t *testing.T) {
 // ── buildNetOnlyScript ───────────────────────────────────────────────────────
 
 func TestBuildNetOnlyScript_HasNetworkSetup(t *testing.T) {
-	script := buildNetOnlyScript(nil, nil, nil, false, "echo", []string{"hello"})
+	script := buildNetOnlyScript([]string{"example.com"}, nil, nil, false, nil, "echo", []string{"hello"})
 
 	for _, want := range []string{
 		"mount --make-rprivate /",
@@ -735,7 +739,7 @@ func TestBuildNetOnlyScript_HasNetworkSetup(t *testing.T) {
 		"nameserver 10.0.2.3",
 		"iptables -A OUTPUT -o lo -j ACCEPT",
 		"iptables -A OUTPUT -j REJECT",
-		"exec echo hello",
+		"exec /tmp/.aigate-exec __sandbox-exec -- echo hello",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("buildNetOnlyScript should contain %q, got:\n%s", want, script)
@@ -745,7 +749,7 @@ func TestBuildNetOnlyScript_HasNetworkSetup(t *testing.T) {
 
 func TestBuildNetOnlyScript_HasNoAigateMarkers(t *testing.T) {
 	// bwrap handles policy/mount/exec isolation — the net-only script should not.
-	script := buildNetOnlyScript(nil, nil, nil, false, "echo", nil)
+	script := buildNetOnlyScript(nil, nil, nil, false, nil, "echo", nil)
 
 	for _, forbidden := range []string{
 		"aigate-policy",
@@ -762,7 +766,7 @@ func TestBuildNetOnlyScript_AllowNetRules(t *testing.T) {
 	script := buildNetOnlyScript(
 		[]string{"api.anthropic.com", "1.2.3.4"},
 		[]string{"8.8.8.8"},
-		nil, false,
+		nil, false, nil,
 		"echo", nil,
 	)
 
@@ -787,7 +791,7 @@ func TestBuildNetOnlyScript_IPv6Rules(t *testing.T) {
 		[]string{"api.anthropic.com"},
 		[]string{"8.8.8.8"},
 		[]string{"2001:4860:4860::8888"},
-		true,
+		true, nil,
 		"echo", nil,
 	)
 	for _, want := range []string{
@@ -810,7 +814,7 @@ func TestBuildNetOnlyScript_NoIPv6WhenDisabled(t *testing.T) {
 		[]string{"api.anthropic.com"},
 		[]string{"8.8.8.8"},
 		[]string{"2001:4860:4860::8888"}, // present but should be ignored
-		false,
+		false, nil,
 		"echo", nil,
 	)
 	for _, forbidden := range []string{"ip6tables", "fd00::3", "ahostsv6", "2001:4860"} {
@@ -822,7 +826,7 @@ func TestBuildNetOnlyScript_NoIPv6WhenDisabled(t *testing.T) {
 
 func TestBuildNetOnlyScript_ArgWithSpaces(t *testing.T) {
 	// Verify that shellEscape fix propagates: args with spaces are quoted.
-	script := buildNetOnlyScript(nil, nil, nil, false, "python3", []string{"my script.py"})
+	script := buildNetOnlyScript(nil, nil, nil, false, nil, "python3", []string{"my script.py"})
 	if !strings.Contains(script, "'my script.py'") {
 		t.Errorf("arg with spaces should be single-quoted in net-only script, got:\n%s", script)
 	}
@@ -835,7 +839,7 @@ func TestBuildNetOnlyScript_ArgWithSpaces(t *testing.T) {
 // the arg construction helpers rather than the executor call.
 
 func TestAppendBwrapNetArgs_HasUnshareNetAndInfoFd(t *testing.T) {
-	args := appendBwrapNetArgs(nil, []string{"example.com"}, []string{"8.8.8.8"}, nil, false, "echo", []string{"hi"})
+	args := appendBwrapNetArgs(nil, []string{"example.com"}, []string{"8.8.8.8"}, nil, false, nil, "echo", []string{"hi"})
 
 	if !containsFlag(args, "--unshare-net") {
 		t.Errorf("args should contain --unshare-net, got: %v", args)
@@ -845,8 +849,8 @@ func TestAppendBwrapNetArgs_HasUnshareNetAndInfoFd(t *testing.T) {
 	}
 }
 
-func TestAppendBwrapNetArgs_InnerScriptPassedToSh(t *testing.T) {
-	args := appendBwrapNetArgs(nil, []string{"example.com"}, nil, nil, false, "echo", []string{"hello"})
+func TestAppendBwrapNetArgs_InnerScriptRunsInSetupShell(t *testing.T) {
+	args := appendBwrapNetArgs(nil, []string{"example.com"}, nil, nil, false, nil, "echo", []string{"hello"})
 
 	sepIdx := -1
 	for i, a := range args {
@@ -858,8 +862,15 @@ func TestAppendBwrapNetArgs_InnerScriptPassedToSh(t *testing.T) {
 		t.Fatal("args should contain -- separator")
 	}
 	afterSep := args[sepIdx+1:]
-	if len(afterSep) < 3 || afterSep[0] != "sh" || afterSep[1] != "-c" {
-		t.Errorf("expected 'sh -c <script>' after --, got: %v", afterSep)
+	// The private host shell, not the system sh deny_exec may wrap.
+	if len(afterSep) < 3 || afterSep[0] != bwrapSetupShell || afterSep[1] != "-c" {
+		t.Errorf("expected '%s -c <script>' after --, got: %v", bwrapSetupShell, afterSep)
+	}
+	if !containsPair(args, hostShell(), bwrapSetupShell) {
+		t.Errorf("the host shell should be bound at %s, got: %v", bwrapSetupShell, args)
+	}
+	if !strings.Contains(afterSep[2], "umount -l "+bwrapSetupShell) {
+		t.Error("the setup shell must be unmounted before the command runs")
 	}
 	script := afterSep[2]
 	// Inner script: net-only setup (no slirp4netns — launched from host side).
@@ -885,7 +896,7 @@ func TestAppendBwrapNetArgs_IsolationFlagsFromBuildBwrapArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildBwrapArgs error: %v", err)
 	}
-	args := appendBwrapNetArgs(base, profile.Config.AllowNet, nil, nil, false, "echo", nil)
+	args := appendBwrapNetArgs(base, profile.Config.AllowNet, nil, nil, false, nil, "echo", nil)
 
 	for _, flag := range []string{"--unshare-user", "--unshare-pid", "--die-with-parent", "--unshare-net"} {
 		if !containsFlag(args, flag) {
@@ -898,7 +909,7 @@ func TestAppendBwrapNetArgs_IsolationFlagsFromBuildBwrapArgs(t *testing.T) {
 }
 
 func TestAppendBwrapNetArgs_NoAigateMarkersInInnerScript(t *testing.T) {
-	args := appendBwrapNetArgs(nil, nil, nil, nil, false, "echo", nil)
+	args := appendBwrapNetArgs(nil, nil, nil, nil, false, nil, "echo", nil)
 	script := ""
 	for i, a := range args {
 		if a == "-c" && i+1 < len(args) {
@@ -915,13 +926,21 @@ func TestAppendBwrapNetArgs_NoAigateMarkersInInnerScript(t *testing.T) {
 func TestSlirpArgs(t *testing.T) {
 	t.Run("v4-only does not pass --enable-ipv6", func(t *testing.T) {
 		args := slirpArgs(1234, false)
-		want := []string{"--configure", "1234", "tap0"}
+		want := []string{"--disable-host-loopback", "--configure", "1234", "tap0"}
 		if len(args) != len(want) {
 			t.Fatalf("len = %d, want %d (%v)", len(args), len(want), args)
 		}
 		for i := range want {
 			if args[i] != want[i] {
 				t.Errorf("args[%d] = %q, want %q", i, args[i], want[i])
+			}
+		}
+	})
+
+	t.Run("host loopback is always off", func(t *testing.T) {
+		for _, v6 := range []bool{false, true} {
+			if !slices.Contains(slirpArgs(1234, v6), "--disable-host-loopback") {
+				t.Errorf("ipv6=%v: 10.0.2.2 would reach the host's 127.0.0.1", v6)
 			}
 		}
 	})
@@ -961,5 +980,34 @@ func TestRunSandboxedDispatch_BwrapNetFilter(t *testing.T) {
 	}
 	if err := p.RunSandboxed(profile, "true", nil, os.Stdout, os.Stderr); err != nil {
 		t.Errorf("RunSandboxed with bwrap+slirp returned error: %v", err)
+	}
+}
+
+// pathOnly sets PATH to a folder holding only the named programs.
+func pathOnly(t *testing.T, names ...string) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, n := range names {
+		if p, err := exec.LookPath(n); err == nil {
+			if err := os.Symlink(p, filepath.Join(dir, n)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Setenv("PATH", dir)
+}
+
+func TestRunSandboxed_AllowNetWithoutSlirpFailsClosed(t *testing.T) {
+	pathOnly(t, "bwrap")
+	mock := newMockExecutor()
+	p := &LinuxPlatform{exec: mock}
+	profile := domain.SandboxProfile{Config: domain.Config{AllowNet: []string{"example.com"}}, WorkDir: "/tmp"}
+
+	err := p.RunSandboxed(profile, "echo", nil, os.Stdout, os.Stderr)
+	if err == nil || !strings.Contains(err.Error(), "slirp4netns is missing") || !strings.Contains(err.Error(), "To allow:") {
+		t.Fatalf("want a block naming slirp4netns and the fix, got %v", err)
+	}
+	if mock.callCount() != 0 {
+		t.Error("nothing may run when allow_net can't be enforced")
 	}
 }

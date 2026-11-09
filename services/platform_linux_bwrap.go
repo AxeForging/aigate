@@ -33,7 +33,8 @@ func hasBwrap() bool {
 // ipv6Enabled must only be true on hosts that also have ip6tables — otherwise
 // the sandbox has v6 connectivity with no filter, which is worse than no v6.
 func slirpArgs(childPID int, ipv6Enabled bool) []string {
-	args := []string{"--configure", strconv.Itoa(childPID), "tap0"}
+	// --disable-host-loopback: 10.0.2.2 must not reach the host's 127.0.0.1.
+	args := []string{"--disable-host-loopback", "--configure", strconv.Itoa(childPID), "tap0"}
 	if ipv6Enabled {
 		args = append([]string{"--enable-ipv6"}, args...)
 	}
@@ -181,7 +182,7 @@ func (p *LinuxPlatform) buildBwrapArgs(profile domain.SandboxProfile, tmpFiles *
 		for _, path := range paths {
 			info, statErr := os.Stat(path)
 			if statErr != nil {
-				helpers.Log.Warn().Str("path", path).Msg("skipping (not found)")
+				helpers.Log.Debug().Str("path", path).Msg("deny_read: nothing to hide (not found)")
 				continue
 			}
 			if info.IsDir() {
@@ -302,12 +303,12 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 		// worse than none, so we drop v6 entirely on hosts without ip6tables.)
 		dnsV6 = nil
 	}
-	helpers.Log.Info().
+	helpers.Log.Debug().
 		Strs("allow_net", profile.Config.AllowNet).
 		Strs("dns_servers_v4", dnsV4).
 		Strs("dns_servers_v6", dnsV6).
 		Bool("ipv6", ipv6Enabled).
-		Msg("starting bwrap network-filtered sandbox")
+		Msg("starting bwrap sandbox with its own network namespace")
 
 	var tmpFiles []string
 	defer func() {
@@ -329,7 +330,12 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 	}
 	defer infoR.Close() //nolint:errcheck
 
-	bwrapArgs = appendBwrapNetArgs(bwrapArgs, profile.Config.AllowNet, dnsV4, dnsV6, ipv6Enabled, cmd, args)
+	execBin, err := sandboxExecBinary()
+	if err != nil {
+		return err
+	}
+	bwrapArgs = append(bwrapArgs, "--ro-bind", execBin, bwrapSandboxExec)
+	bwrapArgs = appendBwrapNetArgs(bwrapArgs, profile.Config.AllowNet, dnsV4, dnsV6, ipv6Enabled, profile.Ports, cmd, args)
 
 	bwrapCmd := exec.Command("bwrap", bwrapArgs...)
 	bwrapCmd.ExtraFiles = []*os.File{infoW} // fd 3 in child
@@ -371,9 +377,21 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 
 	// Launch slirp4netns from the host side targeting the child's net namespace.
 	// Suppress stdout (verbose protocol debug), keep stderr for real errors.
-	slirpCmd := exec.Command("slirp4netns", slirpArgs(childPID, ipv6Enabled)...)
-	slirpCmd.Stdout = nil
-	slirpCmd.Stderr = os.Stderr
+	// Its output is protocol chatter; kept only to explain a failure.
+	var slirpOut strings.Builder
+	sArgs := slirpArgs(childPID, ipv6Enabled)
+	apiSocket := ""
+	if len(profile.Ports) > 0 {
+		var cleanupAPI func()
+		if apiSocket, cleanupAPI, err = slirpAPISocket(); err != nil {
+			return fmt.Errorf("publish ports: %w", err)
+		}
+		defer cleanupAPI()
+		sArgs = append([]string{"--api-socket", apiSocket}, sArgs...)
+	}
+	slirpCmd := exec.Command("slirp4netns", sArgs...)
+	slirpCmd.Stdout = &slirpOut
+	slirpCmd.Stderr = &slirpOut
 	if slirpErr := slirpCmd.Start(); slirpErr != nil {
 		bwrapCmd.Process.Kill() //nolint:errcheck
 		bwrapCmd.Wait()         //nolint:errcheck
@@ -383,7 +401,12 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 		return fmt.Errorf("start slirp4netns: %w", slirpErr)
 	}
 
+	if apiSocket != "" {
+		publishPorts(apiSocket, profile.Ports)
+	}
+
 	// PTY: forward terminal I/O and propagate resize events.
+	var outDone chan struct{}
 	if ptm != nil {
 		if ws, wsErr := pty.GetsizeFull(os.Stdin); wsErr == nil {
 			pty.Setsize(ptm, ws) //nolint:errcheck
@@ -404,18 +427,25 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 		if oldState, rawErr := term.MakeRaw(int(os.Stdin.Fd())); rawErr == nil {
 			defer term.Restore(int(os.Stdin.Fd()), oldState) //nolint:errcheck
 		}
-		go func() { io.Copy(ptm, os.Stdin) }() //nolint:errcheck
-		go func() { io.Copy(stdout, ptm) }()   //nolint:errcheck
+		// Stoppable: a leftover stdin reader would swallow the caller's next
+		// input (e.g. the next prompt of aigate identity add).
+		stopStdin := copyStdin(ptm)
+		defer stopStdin()
+		outDone = make(chan struct{})
+		go func() { _, _ = io.Copy(stdout, ptm); close(outDone) }()
 	}
 
-	// Wait for bwrap to finish, then clean up slirp4netns.
+	// Wait for bwrap to finish (and its output to drain), then stop slirp4netns.
 	bwrapErr := bwrapCmd.Wait()
 	if ptm != nil {
+		<-outDone   // EIO once the sandbox side of the PTY is closed
 		ptm.Close() //nolint:errcheck
 	}
 	slirpCmd.Process.Kill() //nolint:errcheck
 	slirpCmd.Wait()         //nolint:errcheck
-
+	if bwrapErr != nil {
+		helpers.Log.Debug().Str("slirp4netns", slirpOut.String()).Msg("network helper output")
+	}
 	return bwrapErr
 }
 
@@ -426,7 +456,7 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 // resolv.conf (CAP_SYS_ADMIN), so we set UID 0 and add the two caps.
 // bwrap drops all capabilities by default even inside the user namespace;
 // without --uid 0, the process is UID 1000 and nf_tables rejects it.
-func appendBwrapNetArgs(args []string, allowNet, dnsV4, dnsV6 []string, ipv6Enabled bool, cmd string, cmdArgs []string) []string {
+func appendBwrapNetArgs(args []string, allowNet, dnsV4, dnsV6 []string, ipv6Enabled bool, ports []int, cmd string, cmdArgs []string) []string {
 	// Set UID/GID to 0 inside the sandbox: nf_tables requires being root (UID 0)
 	// in the user namespace, not just having CAP_NET_ADMIN.
 	args = append(args, "--uid", "0", "--gid", "0")
@@ -436,8 +466,12 @@ func appendBwrapNetArgs(args []string, allowNet, dnsV4, dnsV6 []string, ipv6Enab
 	// bwrap creates the network namespace natively; info-fd 3 (ExtraFiles[0])
 	// carries the child PID so the parent can launch slirp4netns.
 	args = append(args, "--unshare-net", "--info-fd", "3")
-	innerScript := buildNetOnlyScript(allowNet, dnsV4, dnsV6, ipv6Enabled, cmd, cmdArgs)
-	args = append(args, "--", "sh", "-c", innerScript)
+	// Setup runs in the host's real shell, bound privately: deny_exec rules
+	// (e.g. "sh -c") are mounted over the system shell and are for the
+	// command, not for aigate's own setup.
+	args = append(args, "--ro-bind", hostShell(), bwrapSetupShell)
+	innerScript := buildNetOnlyScript(allowNet, dnsV4, dnsV6, ipv6Enabled, ports, cmd, cmdArgs)
+	args = append(args, "--", bwrapSetupShell, "-c", innerScript)
 	return args
 }
 
@@ -486,23 +520,15 @@ func readBwrapInfoPID(r io.Reader) (int, error) {
 // network-specific setup: waiting for tap0, pointing resolv.conf at the
 // slirp4netns DNS forwarder(s), configuring iptables (+ ip6tables when v6
 // enabled), then exec'ing the command.
-func buildNetOnlyScript(allowNetHosts, dnsServersV4, dnsServersV6 []string, ipv6Enabled bool, cmd string, args []string) string {
+func buildNetOnlyScript(allowNetHosts, dnsServersV4, dnsServersV6 []string, ipv6Enabled bool, ports []int, cmd string, args []string) string {
 	var sb strings.Builder
 
 	// Ensure mount propagation is private (bwrap sets this, but be defensive).
 	sb.WriteString("mount --make-rprivate / 2>/dev/null || true\n")
 
-	writeWaitForTap0(&sb)
-	writeResolvConf(&sb, ipv6Enabled)
-	writeIPv4Rules(&sb, allowNetHosts, dnsServersV4)
-	if ipv6Enabled {
-		writeIPv6Rules(&sb, allowNetHosts, dnsServersV6)
-	}
-
-	sb.WriteString("exec ")
-	sb.WriteString(shellEscape(cmd, args))
-	sb.WriteString("\n")
-
+	writeNetSetup(&sb, allowNetHosts, dnsServersV4, dnsServersV6, ipv6Enabled, ports)
+	fmt.Fprintf(&sb, "umount -l %s\n", bwrapSetupShell) // the command gets deny_exec's view of sh
+	sb.WriteString(execAsCommand(bwrapSandboxExec, "", cmd, args))
 	return sb.String()
 }
 

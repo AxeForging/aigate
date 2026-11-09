@@ -45,6 +45,11 @@ var allowPathFlag = cli.StringSliceFlag{
 	Usage: "Session-only scope path (repeatable); with scope active, only the workdir and allowed paths are accessible",
 }
 
+var portFlag = cli.StringSliceFlag{
+	Name:  "port",
+	Usage: "Make a server started inside reachable at localhost:PORT on your machine (repeatable), e.g. --port 3000",
+}
+
 var identityFlag = cli.StringFlag{
 	Name:  "identity, i",
 	Usage: "Run as this identity (see: aigate identity list). Default: the identity bound to this folder, then default_identity",

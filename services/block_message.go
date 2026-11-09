@@ -76,3 +76,11 @@ func DenyExecBlock(entry string) Block {
 	return Block{What: "exec " + entry, Layer: LayerRule, Reason: fmt.Sprintf("%q is in deny_exec", entry),
 		Fix: "aigate allow exec " + shellArg(entry)}
 }
+
+// NoSlirpBlock: allow_net is set but can't be enforced, so the run stops
+// instead of silently going out unfiltered.
+func NoSlirpBlock() Block {
+	return Block{What: "this run", Layer: LayerSandbox,
+		Reason: "allow_net is set but slirp4netns is missing, so the network can't be filtered",
+		Fix:    "install slirp4netns (sudo apt install slirp4netns, or sudo dnf install slirp4netns), or remove the hosts with: aigate deny net HOST"}
+}

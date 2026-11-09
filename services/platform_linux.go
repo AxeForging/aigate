@@ -183,15 +183,22 @@ func (p *LinuxPlatform) RunSandboxed(profile domain.SandboxProfile, cmd string, 
 	if problem := DetectUsernsProblem(); problem != nil {
 		return problem
 	}
-	if len(profile.Config.AllowNet) > 0 {
-		if hasSlirp4netns() {
-			if hasBwrap() {
-				return p.runWithBwrapNetFilter(profile, cmd, args, stdout, stderr)
-			}
-			return p.runWithNetFilter(profile, cmd, args, stdout, stderr)
+	// Own network namespace whenever possible, allow_net or not: services on
+	// the host's 127.0.0.1 and abstract unix sockets (X11, session helpers)
+	// stay outside. allow_net adds a firewall on top.
+	if hasSlirp4netns() {
+		if hasBwrap() {
+			return p.runWithBwrapNetFilter(profile, cmd, args, stdout, stderr)
 		}
-		helpers.Log.Warn().Msg("slirp4netns not found; network filtering unavailable, running without network restrictions")
+		if len(profile.Ports) > 0 {
+			return portsNeedBwrap()
+		}
+		return p.runWithNetFilter(profile, cmd, args, stdout, stderr)
 	}
+	if len(profile.Config.AllowNet) > 0 {
+		return NoSlirpBlock()
+	}
+	fmt.Fprintln(os.Stderr, "[aigate] warning: slirp4netns not found — this session shares your network, so services on 127.0.0.1 and desktop sockets are reachable. Install slirp4netns to isolate them.")
 	if hasBwrap() {
 		return p.runWithBwrap(profile, cmd, args, stdout, stderr)
 	}
@@ -211,10 +218,17 @@ func (p *LinuxPlatform) runUnshare(profile domain.SandboxProfile, cmd string, ar
 		"--",
 	}
 
+	stage, cleanup, err := stageSandboxExec()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
 	var sb strings.Builder
 	// Ensure inherited mounts are private so bind mounts work in all environments.
 	// Modern unshare --mount does this (util-linux 2.27+), but be explicit for safety.
 	sb.WriteString("mount --make-rprivate / 2>/dev/null || true\n")
+	sb.WriteString(stage.bindScript())
 	sb.WriteString(buildPolicyFile(profile))
 	sb.WriteString(buildScopeOverrides(profile))
 	sb.WriteString(buildConfigDirOverride())
@@ -222,9 +236,7 @@ func (p *LinuxPlatform) runUnshare(profile domain.SandboxProfile, cmd string, ar
 	sb.WriteString(buildExecDenyOverrides(profile))
 	sb.WriteString(buildIdentityOverrides(profile))
 	sb.WriteString(buildAgentOverrides())
-	sb.WriteString("exec ")
-	sb.WriteString(shellEscape(cmd, args))
-	sb.WriteString("\n")
+	sb.WriteString(execAsCommand(stage.dst, profile.WorkDir, cmd, args))
 
 	fullArgs := append(unshareArgs, "sh", "-c", sb.String())
 	return p.exec.RunPassthroughWith(stdout, stderr, "unshare", fullArgs...)
@@ -374,14 +386,19 @@ func (p *LinuxPlatform) runWithNetFilter(profile domain.SandboxProfile, cmd stri
 	if !ipv6Enabled {
 		dnsV6 = nil
 	}
-	helpers.Log.Info().
+	helpers.Log.Debug().
 		Strs("allow_net", profile.Config.AllowNet).
 		Strs("dns_servers_v4", dnsV4).
 		Strs("dns_servers_v6", dnsV6).
 		Bool("ipv6", ipv6Enabled).
-		Msg("starting network-filtered sandbox")
+		Msg("starting sandbox with its own network namespace")
 
-	innerScript := buildNetFilterScript(profile.Config.AllowNet, dnsV4, dnsV6, ipv6Enabled, profile, cmd, args)
+	stage, cleanup, err := stageSandboxExec()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	innerScript := buildNetFilterScript(profile.Config.AllowNet, dnsV4, dnsV6, ipv6Enabled, profile, stage, cmd, args)
 	outerScript := buildOrchestrationScript(innerScript, ipv6Enabled)
 
 	return p.exec.RunPassthroughWith(stdout, stderr, "unshare", "--user", "--map-root-user", "--", "sh", "-c", outerScript)
@@ -417,11 +434,11 @@ func buildOrchestrationScript(innerScript string, ipv6Enabled bool) string {
 	sb.WriteString("while [ -e \"/proc/$_SANDBOX_PID\" ] && [ \"$(readlink /proc/$_SANDBOX_PID/ns/net 2>/dev/null)\" = \"$_SELF_NS\" ]; do sleep 0.01; done\n")
 
 	// Launch slirp4netns: runs in user ns (has CAP_SYS_ADMIN) + host network.
-	// Suppress stdout (verbose protocol debug), keep stderr for real errors.
+	// Its output is protocol chatter; a failed start shows up as no network.
 	if ipv6Enabled {
-		sb.WriteString("slirp4netns --enable-ipv6 --configure $_SANDBOX_PID tap0 >/dev/null &\n")
+		sb.WriteString("slirp4netns --disable-host-loopback --enable-ipv6 --configure $_SANDBOX_PID tap0 >/dev/null 2>&1 &\n")
 	} else {
-		sb.WriteString("slirp4netns --configure $_SANDBOX_PID tap0 >/dev/null &\n")
+		sb.WriteString("slirp4netns --disable-host-loopback --configure $_SANDBOX_PID tap0 >/dev/null 2>&1 &\n")
 	}
 	sb.WriteString("_SLIRP_PID=$!\n")
 
@@ -515,7 +532,7 @@ func writeIPv6Rules(sb *strings.Builder, allowNetHosts, dnsServers []string) {
 // loopback + DNS port 53 + dnsServersV6 + AAAA-resolved allowNetHosts + final
 // REJECT. ipv6Enabled must only be set when the caller has verified ip6tables
 // is available — a partial v6 ruleset is worse than none.
-func buildNetFilterScript(allowNetHosts, dnsServersV4, dnsServersV6 []string, ipv6Enabled bool, profile domain.SandboxProfile, cmd string, args []string) string {
+func buildNetFilterScript(allowNetHosts, dnsServersV4, dnsServersV6 []string, ipv6Enabled bool, profile domain.SandboxProfile, stage sandboxExecStage, cmd string, args []string) string {
 	var sb strings.Builder
 
 	// Ensure inherited mounts are private so bind mounts work in all environments.
@@ -526,12 +543,8 @@ func buildNetFilterScript(allowNetHosts, dnsServersV4, dnsServersV6 []string, ip
 	// "fatal library error, lookup self".
 	sb.WriteString("mount -t proc proc /proc\n")
 
-	writeWaitForTap0(&sb)
-	writeResolvConf(&sb, ipv6Enabled)
-	writeIPv4Rules(&sb, allowNetHosts, dnsServersV4)
-	if ipv6Enabled {
-		writeIPv6Rules(&sb, allowNetHosts, dnsServersV6)
-	}
+	sb.WriteString(stage.bindScript())
+	writeNetSetup(&sb, allowNetHosts, dnsServersV4, dnsServersV6, ipv6Enabled, nil)
 
 	// Write policy file + mount overrides (deny_read markers point here)
 	sb.WriteString(buildPolicyFile(profile))
@@ -541,12 +554,7 @@ func buildNetFilterScript(allowNetHosts, dnsServersV4, dnsServersV6 []string, ip
 	sb.WriteString(buildExecDenyOverrides(profile))
 	sb.WriteString(buildIdentityOverrides(profile))
 	sb.WriteString(buildAgentOverrides())
-
-	// Execute the target command
-	sb.WriteString("exec ")
-	sb.WriteString(shellEscape(cmd, args))
-	sb.WriteString("\n")
-
+	sb.WriteString(execAsCommand(stage.dst, profile.WorkDir, cmd, args))
 	return sb.String()
 }
 

@@ -54,6 +54,7 @@ FILESYSTEM SCOPE (allowed_paths)
   aigate allow path ~/experiments          # Add a path to the scope (persists)
   aigate deny path ~/experiments           # Remove it (empty list = scope off)
   aigate run --allow-path ~/notes -- claude  # Extra scope path, one session only
+  aigate run --port 3000 -- claude           # Open the agent's dev server at localhost:3000
 
   'aigate init' enables scope mode by default with the dirs agent tools need:
   ~/.cache ~/.config ~/.local ~/.claude ~/.claude.json ~/.npm
