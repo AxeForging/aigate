@@ -27,10 +27,10 @@ var identityBaseAllowedPaths = []string{"~/.cache", "~/.npm", "~/.local/bin", "~
 // IdentityProblem is a config issue, with the command that fixes it when
 // there is one. Fatal problems stop a run.
 type IdentityProblem struct {
-	Identity string
-	Message  string
-	Fix      string
-	Fatal    bool
+	Identity string `json:"identity,omitempty"`
+	Message  string `json:"message"`
+	Fix      string `json:"fix,omitempty"`
+	Fatal    bool   `json:"fatal"`
 }
 
 type IdentityService struct{}
