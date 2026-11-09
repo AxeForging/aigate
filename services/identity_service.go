@@ -192,7 +192,7 @@ func (s *IdentityService) EffectiveAllowedPaths(cfg *domain.Config, id *domain.R
 	if err != nil {
 		return nil, err
 	}
-	paths := []string{id.ClaudeDir, id.GhDir}
+	paths := identityOwnPaths(id)
 	add := func(p string) {
 		if p = filepath.Clean(p); !containsPath(paths, p) {
 			paths = append(paths, p)
@@ -215,7 +215,7 @@ func (s *IdentityService) EffectiveAllowedPaths(cfg *domain.Config, id *domain.R
 		if err != nil {
 			return nil, err
 		}
-		for _, protected := range []string{o.ClaudeDir, o.GhDir, o.SSHKey} {
+		for _, protected := range append(identityOwnPaths(o), o.SSHKey) {
 			if protected == "" {
 				continue
 			}
@@ -248,11 +248,14 @@ func expandHome(p string) (string, error) {
 // deepestBinding returns the identity bound to the deepest folder that
 // contains workDir, and that folder as written in config.
 func deepestBinding(bindings map[string]string, workDir string) (name, dir string) {
-	wd := filepath.Clean(workDir)
+	wd := CanonicalPath(workDir)
 	best := -1
 	for raw, n := range bindings {
 		p, err := expandHome(raw)
-		if err != nil || !underAny(wd, []string{p}) {
+		if err != nil {
+			continue
+		}
+		if p = CanonicalPath(p); !underAny(wd, []string{p}) {
 			continue
 		}
 		if len(p) > best || (len(p) == best && raw < dir) {
@@ -278,4 +281,25 @@ func containsPath(list []string, p string) bool {
 		}
 	}
 	return false
+}
+
+// identityOwnPaths are the dirs (and, for the default Claude dir, the
+// ~/.claude.json settings file) that belong to one identity only.
+func identityOwnPaths(id *domain.ResolvedIdentity) []string {
+	paths := []string{id.ClaudeDir, id.GhDir}
+	if usesDefaultClaudeDir(id) {
+		_, settings := defaultClaudePaths()
+		paths = append(paths, settings)
+	}
+	return paths
+}
+
+// CanonicalPath resolves symlinks so paths reached different ways compare
+// equal (macOS /var → /private/var, Silverblue /home → /var/home). Paths
+// that don't exist are only cleaned.
+func CanonicalPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
 }

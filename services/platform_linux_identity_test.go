@@ -3,9 +3,6 @@
 package services
 
 import (
-	"bytes"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -81,72 +78,5 @@ func TestCheckFallbackIdentity_RefusesSSHKeyWithFix(t *testing.T) {
 	}
 	if checkFallbackIdentity(domain.SandboxProfile{}) != nil {
 		t.Error("no identity must pass")
-	}
-}
-
-// TestRunSandboxed_IdentityIsolation runs real bwrap: the work identity sees
-// its own dirs, key and author, while personal's dirs and host tokens are gone.
-func TestRunSandboxed_IdentityIsolation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping real-exec test in short mode")
-	}
-	if !hasBwrap() {
-		t.Skip("bwrap not installed")
-	}
-	home, cfg := identityHome(t)
-	write := func(rel, content string) {
-		if err := os.WriteFile(filepath.Join(home, rel), []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write(".claude-work/creds", "work-own-login")
-	write(".claude/creds", "canary-personal-claude")
-	write(".config/gh/hosts.yml", "canary-personal-gh")
-	t.Setenv("GH_TOKEN", "canary-host-gh-token")
-	t.Setenv("ANTHROPIC_API_KEY", "canary-host-anthropic")
-
-	svc := NewIdentityService()
-	workDir := home + "/work/api"
-	id, err := svc.Resolve(cfg, "", workDir)
-	if err != nil || id == nil || id.Name != "work" {
-		t.Fatalf("resolve: %+v %v", id, err)
-	}
-	cfg.AllowedPaths = NewConfigService().InitDefaultConfig().AllowedPaths
-	allowed, err := svc.EffectiveAllowedPaths(cfg, id, workDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	profile := domain.SandboxProfile{
-		Config:   domain.Config{DenyRead: []string{"~/.ssh/"}, AllowedPaths: allowed},
-		WorkDir:  workDir,
-		Identity: id,
-	}
-
-	script := `cat "$HOME/.claude-work/creds"; echo
-cat "$HOME/.claude/creds" "$HOME/.config/gh/hosts.yml" 2>/dev/null
-cat "$HOME/.ssh/id_work"; echo
-echo "CCD=$CLAUDE_CONFIG_DIR GHD=$GH_CONFIG_DIR WHO=$AIGATE_IDENTITY"
-echo "AUTHOR=$GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL>"
-echo "TOKENS=${GH_TOKEN:-}${ANTHROPIC_API_KEY:-}"
-echo MARKER_DONE`
-	var out bytes.Buffer
-	p := &LinuxPlatform{exec: &RealExecutor{}}
-	if err := p.RunSandboxed(profile, "sh", []string{"-c", script}, &out, &out); err != nil {
-		t.Fatalf("RunSandboxed: %v\n%s", err, out.String())
-	}
-	got := out.String()
-	for _, want := range []string{
-		"work-own-login", "fake-key-for-tests",
-		"CCD=" + home + "/.claude-work GHD=" + home + "/.config/gh-work WHO=work",
-		"AUTHOR=Test Work <work@example.test>", "TOKENS=\n", "MARKER_DONE",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("missing %q in sandbox output:\n%s", want, got)
-		}
-	}
-	for _, leak := range []string{"canary-personal-claude", "canary-personal-gh", "canary-host-gh-token", "canary-host-anthropic"} {
-		if strings.Contains(got, leak) {
-			t.Errorf("leaked %q into the work sandbox:\n%s", leak, got)
-		}
 	}
 }

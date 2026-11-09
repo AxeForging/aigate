@@ -1,6 +1,8 @@
 package services
 
 import (
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -32,9 +34,16 @@ func identityEnv(id *domain.ResolvedIdentity) (set []EnvVar, unset []string) {
 		return nil, nil
 	}
 	set = []EnvVar{
-		{"CLAUDE_CONFIG_DIR", id.ClaudeDir},
 		{"GH_CONFIG_DIR", id.GhDir},
 		{"AIGATE_IDENTITY", id.Name},
+	}
+	// Claude Code treats an explicit CLAUDE_CONFIG_DIR=~/.claude differently
+	// from leaving it unset (other .claude.json location, other macOS
+	// Keychain item), so the identity using the default dir leaves it unset.
+	if !usesDefaultClaudeDir(id) {
+		set = append([]EnvVar{{"CLAUDE_CONFIG_DIR", id.ClaudeDir}}, set...)
+	} else {
+		unset = append(unset, "CLAUDE_CONFIG_DIR")
 	}
 	if id.Git.Name != "" {
 		set = append(set, EnvVar{"GIT_AUTHOR_NAME", id.Git.Name}, EnvVar{"GIT_COMMITTER_NAME", id.Git.Name})
@@ -64,4 +73,19 @@ func identityEnv(id *domain.ResolvedIdentity) (set []EnvVar, unset []string) {
 // singleQuote quotes s for sh, which is how git runs GIT_SSH_COMMAND.
 func singleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// defaultClaudePaths are where Claude Code keeps its login and settings when
+// CLAUDE_CONFIG_DIR is unset.
+func defaultClaudePaths() (dir, settings string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", ""
+	}
+	return filepath.Join(home, ".claude"), filepath.Join(home, ".claude.json")
+}
+
+func usesDefaultClaudeDir(id *domain.ResolvedIdentity) bool {
+	dir, _ := defaultClaudePaths()
+	return dir != "" && filepath.Clean(id.ClaudeDir) == dir
 }

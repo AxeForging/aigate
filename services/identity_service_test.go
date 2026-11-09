@@ -318,3 +318,47 @@ func containsString(list []string, s string) bool {
 	}
 	return false
 }
+
+func TestEffectiveAllowedPaths_DefaultClaudeDirOwnsSettingsFile(t *testing.T) {
+	home, cfg := identityHome(t)
+	svc := NewIdentityService()
+	personal, _ := svc.Resolve(cfg, "personal", home)
+	got, err := svc.EffectiveAllowedPaths(cfg, personal, home)
+	if err != nil || !containsString(got, home+"/.claude.json") {
+		t.Fatalf("default-dir identity should get ~/.claude.json, got %v err=%v", got, err)
+	}
+
+	w := cfg.Identities["work"]
+	w.AllowedPaths = []string{"~/.claude.json"}
+	cfg.Identities["work"] = w
+	work, _ := svc.Resolve(cfg, "work", home)
+	if _, err := svc.EffectiveAllowedPaths(cfg, work, home); err == nil || !strings.Contains(err.Error(), `"personal"`) {
+		t.Errorf("another identity listing ~/.claude.json must be refused, got %v", err)
+	}
+}
+
+// TestResolve_SymlinkedHomeMatchesBinding: $HOME reached via a symlink
+// (macOS /var → /private/var, Silverblue /home → /var/home) while the
+// working directory comes back resolved; the binding must still match.
+func TestResolve_SymlinkedHomeMatchesBinding(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "home-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+	t.Setenv("HOME", link)
+	if err := os.MkdirAll(filepath.Join(real, "work", "api"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &domain.Config{
+		Identities:       map[string]domain.Identity{"work": {ClaudeDir: "~/.claude-work", GhDir: "~/.config/gh-work"}},
+		IdentityBindings: map[string]string{"~/work": "work"},
+	}
+	got, err := NewIdentityService().Resolve(cfg, "", filepath.Join(real, "work", "api"))
+	if err != nil || got == nil || got.Name != "work" {
+		t.Fatalf("binding ~/work should match the resolved workdir, got %+v err=%v", got, err)
+	}
+	if CanonicalPath(filepath.Join(link, "work")) != CanonicalPath(filepath.Join(real, "work")) {
+		t.Errorf("CanonicalPath should resolve the symlinked home")
+	}
+}

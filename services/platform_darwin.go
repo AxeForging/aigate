@@ -189,16 +189,20 @@ func (p *DarwinPlatform) RunSandboxed(profile domain.SandboxProfile, cmd string,
 	if err != nil {
 		return fmt.Errorf("failed to create sandbox profile: %w", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	if _, err := tmpFile.WriteString(sbProfile); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return fmt.Errorf("failed to write sandbox profile: %w", err)
 	}
-	tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to write sandbox profile: %w", err)
+	}
 
-	// Run command under sandbox-exec
-	sandboxArgs := []string{"-f", tmpFile.Name(), cmd}
+	// Run command under sandbox-exec; /usr/bin/env applies identity env vars.
+	sandboxArgs := []string{"-f", tmpFile.Name()}
+	sandboxArgs = append(sandboxArgs, identityEnvCommand(profile.Identity)...)
+	sandboxArgs = append(sandboxArgs, cmd)
 	sandboxArgs = append(sandboxArgs, args...)
 	return p.exec.RunPassthroughWith(stdout, stderr, "sandbox-exec", sandboxArgs...)
 }
@@ -221,18 +225,20 @@ func writeSeatbeltScopeRules(sb *strings.Builder, profile domain.SandboxProfile)
 	}
 
 	fmt.Fprintf(sb, "(deny file-write*)\n")
-	fmt.Fprintf(sb, "(deny file-read* (subpath %q))\n", home)
 
 	// Temp + device locations interactive tools need to function.
 	for _, p := range []string{"/tmp", "/private/tmp", "/private/var/tmp", "/private/var/folders", "/dev"} {
 		fmt.Fprintf(sb, "(allow file-write* (subpath %q))\n", p)
 	}
+	// After the temp allows, so $HOME stays hidden even if it lives under one.
+	fmt.Fprintf(sb, "(deny file-read* file-write* (subpath %q))\n", realPath(home))
 
 	allowPath := func(path string) {
 		info, err := os.Stat(path)
 		if err != nil {
 			return
 		}
+		path = realPath(path)
 		if info.IsDir() {
 			fmt.Fprintf(sb, "(allow file-read* file-write* (subpath %q))\n", path)
 		} else {
@@ -244,6 +250,34 @@ func writeSeatbeltScopeRules(sb *strings.Builder, profile domain.SandboxProfile)
 	}
 	for _, p := range scoped {
 		allowPath(p)
+	}
+
+	// Tools like git stat every parent of the working dir; allow metadata
+	// (not listing or contents) of the folders between $HOME and each
+	// allowed path, or they fail with "Operation not permitted".
+	seen := map[string]bool{}
+	for _, p := range append([]string{profile.WorkDir}, scoped...) {
+		for _, dir := range parentsWithin(realPath(p), realPath(home)) {
+			if !seen[dir] {
+				seen[dir] = true
+				fmt.Fprintf(sb, "(allow file-read-metadata (literal %q))\n", dir)
+			}
+		}
+	}
+}
+
+// parentsWithin returns the parent dirs of p up to and including root, or
+// nothing when p is not under root.
+func parentsWithin(p, root string) []string {
+	if p == "" || !strings.HasPrefix(p, root+"/") {
+		return nil
+	}
+	var out []string
+	for dir := filepath.Dir(p); ; dir = filepath.Dir(dir) {
+		out = append(out, dir)
+		if dir == root || dir == "/" {
+			return out
+		}
 	}
 }
 
@@ -268,17 +302,22 @@ func generateSeatbeltProfile(profile domain.SandboxProfile) string {
 				continue
 			}
 			if info.IsDir() {
-				sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", path))
+				fmt.Fprintf(&sb, "(deny file-read* (subpath %q))\n", realPath(path))
 			} else {
-				sb.WriteString(fmt.Sprintf("(deny file-read* (literal %q))\n", path))
+				fmt.Fprintf(&sb, "(deny file-read* (literal %q))\n", realPath(path))
 			}
 		}
+	}
+
+	// The identity's ssh key, re-allowed after any ~/.ssh deny (later wins).
+	if id := profile.Identity; id != nil && id.SSHKey != "" {
+		fmt.Fprintf(&sb, "(allow file-read* (literal %q))\n", realPath(id.SSHKey))
 	}
 
 	// Deny read access to aigate config directory
 	if home, err := os.UserHomeDir(); err == nil {
 		configDir := filepath.Join(home, ".aigate")
-		sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", configDir))
+		fmt.Fprintf(&sb, "(deny file-read* (subpath %q))\n", realPath(configDir))
 	}
 
 	// Deny execution of blocked commands
@@ -290,7 +329,7 @@ func generateSeatbeltProfile(profile domain.SandboxProfile) string {
 		}
 		// Full command block: find all instances via PATH
 		if path, err := exec.LookPath(entry); err == nil {
-			sb.WriteString(fmt.Sprintf("(deny process-exec (literal %q))\n", path))
+			fmt.Fprintf(&sb, "(deny process-exec (literal %q))\n", path)
 		}
 	}
 
@@ -299,9 +338,35 @@ func generateSeatbeltProfile(profile domain.SandboxProfile) string {
 		sb.WriteString("(deny network-outbound)\n")
 		sb.WriteString("(allow network-outbound (local ip))\n")
 		for _, host := range profile.Config.AllowNet {
-			sb.WriteString(fmt.Sprintf("(allow network-outbound (remote ip %q))\n", host))
+			fmt.Fprintf(&sb, "(allow network-outbound (remote ip %q))\n", host)
 		}
 	}
 
 	return sb.String()
+}
+
+// realPath resolves symlinks (e.g. /var → /private/var, /tmp → /private/tmp):
+// Seatbelt matches resolved paths, so rules on the symlinked form never apply.
+func realPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return p
+}
+
+// identityEnvCommand returns "/usr/bin/env -u X … K=V …" for an identity, or
+// nothing when no identity is active.
+func identityEnvCommand(id *domain.ResolvedIdentity) []string {
+	set, unset := identityEnv(id)
+	if len(set) == 0 && len(unset) == 0 {
+		return nil
+	}
+	args := []string{"/usr/bin/env"}
+	for _, v := range unset {
+		args = append(args, "-u", v)
+	}
+	for _, v := range set {
+		args = append(args, v.Name+"="+v.Value)
+	}
+	return args
 }

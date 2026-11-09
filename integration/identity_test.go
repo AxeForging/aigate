@@ -41,12 +41,13 @@ identity_bindings:
 
 func newIdentityFixture(t *testing.T, extraAllowed, passEnv string) identityFixture {
 	t.Helper()
-	skipWithoutBwrap(t)
+	skipWithoutSandbox(t)
 	home := t.TempDir()
 	files := map[string]string{
 		".claude-work/creds":     "canary-work-claude",
 		".config/gh-work/hosts":  "canary-work-gh",
 		".claude/creds":          "canary-personal-claude",
+		".claude.json":           "canary-personal-settings",
 		".config/gh/hosts":       "canary-personal-gh",
 		".ssh/id_work":           "canary-work-sshkey",
 		".ssh/id_personal":       "canary-personal-sshkey",
@@ -86,9 +87,9 @@ func (f identityFixture) runAs(t *testing.T, bin, dir string, flags []string, sc
 }
 
 const probeAllIdentities = `cat ~/.claude-work/creds ~/.config/gh-work/hosts 2>/dev/null; echo
-cat ~/.claude/creds ~/.config/gh/hosts ~/.ssh/id_work ~/.ssh/id_personal 2>/dev/null; echo
+cat ~/.claude/creds ~/.claude.json ~/.config/gh/hosts ~/.ssh/id_work ~/.ssh/id_personal 2>/dev/null; echo
 ls -a ~ ~/.config 2>/dev/null
-echo "CCD=$CLAUDE_CONFIG_DIR GHD=$GH_CONFIG_DIR WHO=$AIGATE_IDENTITY"
+echo "CCD=${CLAUDE_CONFIG_DIR:-} GHD=$GH_CONFIG_DIR WHO=$AIGATE_IDENTITY"
 echo "TOKENS=${GH_TOKEN:-}${ANTHROPIC_API_KEY:-}"
 echo MARKER_DONE`
 
@@ -110,7 +111,7 @@ func TestIdentity_BoundFolderSelectsAndIsolates(t *testing.T) {
 			t.Errorf("missing %q:\n%s", want, out)
 		}
 	}
-	refuteLeak(t, out, "canary-personal-claude", "canary-personal-gh", "canary-personal-sshkey",
+	refuteLeak(t, out, "canary-personal-claude", "canary-personal-settings", "canary-personal-gh", "canary-personal-sshkey",
 		"canary-host-gh-token", "canary-host-anthropic", "other-app", "id_personal")
 }
 
@@ -122,7 +123,8 @@ func TestIdentity_FlagOverridesBinding(t *testing.T) {
 	f := newIdentityFixture(t, "", "")
 
 	out := mustRun(t, f, bin, f.workDir, []string{"--identity", "personal"}, probeAllIdentities)
-	for _, want := range []string{"[aigate] identity: personal (--identity flag)", "canary-personal-claude", "canary-personal-gh"} {
+	for _, want := range []string{"[aigate] identity: personal (--identity flag)", "canary-personal-claude",
+		"canary-personal-settings", "canary-personal-gh", "CCD= GHD=" + f.home + "/.config/gh WHO=personal"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q:\n%s", want, out)
 		}
