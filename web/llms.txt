@@ -10,8 +10,9 @@ aigate wraps Claude Code, Cursor, Copilot, Aider, and any other AI coding tool i
 - **Filesystem scope**: `allowed_paths` hides everything in `$HOME` except the working directory and explicitly allowed paths — non-scoped files are invisible at the kernel level, for both reads and writes
 - **Process isolation**: Bubblewrap (`bwrap`) + mount namespaces on Linux; Seatbelt on macOS
 - **Network isolation**: `bwrap --unshare-net` + `slirp4netns` + `iptables`/`ip6tables` restrict egress to an allowlist of domains
+- **Identities**: separate Claude Code / GitHub CLI logins, git author and ssh key per account (work, personal, clients); a session only sees its own identity's logins. Set up with `aigate identity add NAME`, bind folders with `aigate identity use NAME`, check with `aigate whoami`. On macOS, Claude logins live in the Keychain and are not access-isolated between identities.
 - **Command blocking**: deny execution of specific commands (e.g. `curl`, `wget`, `ssh`)
-- **Output masking**: redact secrets (API keys, tokens) from stdout/stderr before they reach the terminal
+- **Output masking**: redact secrets (Anthropic, OpenAI, AWS, GitHub, Cloudflare, GitLab, Slack, Stripe, Google, npm, Hugging Face tokens) from stdout/stderr before they reach the terminal
 - **Audit log + dashboard**: every run and blocked action is recorded to `~/.aigate/audit.jsonl`; `aigate serve` exposes a local web dashboard over it
 
 ## Configuration
