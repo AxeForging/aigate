@@ -323,7 +323,7 @@ func TestBuildBwrapArgs_DenyReadFile(t *testing.T) {
 			if err != nil {
 				t.Fatalf("deny marker %q should be readable: %v", args[i+1], err)
 			}
-			if !strings.Contains(string(data), "[aigate] access denied") {
+			if !strings.Contains(string(data), "[aigate] blocked read of this file — rule:") {
 				t.Errorf("deny marker content = %q, missing deny message", string(data))
 			}
 			return

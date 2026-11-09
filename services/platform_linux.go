@@ -652,8 +652,8 @@ func buildScopeOverrides(profile domain.SandboxProfile) string {
 // Each mount is independent — a failure to mount one path does not prevent
 // mounting others or executing subsequent sandbox setup.
 func buildMountOverrides(profile domain.SandboxProfile) string {
-	const denyMsg = "[aigate] access denied: this file is protected by sandbox policy. See /tmp/.aigate-policy for all active restrictions."
-	const dirMsg = "[aigate] access denied: this directory is protected by sandbox policy. Run 'cat /tmp/.aigate-policy' to see all active restrictions."
+	denyMsg := strings.TrimSuffix(DenyReadMarker(), "\n")
+	dirMsg := strings.TrimSuffix(DenyReadDirMarker(), "\n")
 
 	type mountEntry struct {
 		isDir bool
@@ -732,7 +732,8 @@ func buildExecDenyOverrides(profile domain.SandboxProfile) string {
 
 	// Create the deny script for full command blocks (standalone command).
 	if len(fullBlocks) > 0 {
-		sb.WriteString("printf '#!/bin/sh\\necho \"[aigate] blocked: this command is denied by sandbox policy\" >&2\\nexit 126\\n' > /tmp/.aigate-deny-exec && chmod +x /tmp/.aigate-deny-exec\n")
+		fmt.Fprintf(&sb, "printf '#!/bin/sh\\necho \"%s\" >&2\\nexit 126\\n' > /tmp/.aigate-deny-exec && chmod +x /tmp/.aigate-deny-exec\n",
+			DenyExecShellMessage(`$(basename "$0")`, `$(basename "$0")`))
 
 		// For each denied command, find all instances in PATH and overlay them.
 		// Each command is independent — a failure doesn't affect others.
@@ -749,18 +750,19 @@ func buildExecDenyOverrides(profile domain.SandboxProfile) string {
 		// Build case statement arms for denied subcommands
 		var caseArms strings.Builder
 		for _, sub := range subs {
-			fmt.Fprintf(&caseArms, "%s) echo \"[aigate] blocked: '%s %s' is denied by sandbox policy\" >&2; exit 126;; ", sub, baseCmd, sub)
+			fmt.Fprintf(&caseArms, "%s) echo \"%s\" >&2; exit 126;; ", sub, DenyExecShellMessage(baseCmd+" "+sub, "'"+baseCmd+" "+sub+"'"))
 		}
 
+		safeName := filepath.Base(baseCmd)
 		wrapper := fmt.Sprintf("#!/bin/sh\nfor _a in \"$@\"; do case \"$_a\" in %s*) break;; esac; done\nexec /tmp/.aigate-orig-%s \"$@\"\n",
-			caseArms.String(), baseCmd)
+			caseArms.String(), safeName)
 
 		encoded := base64.StdEncoding.EncodeToString([]byte(wrapper))
 
 		// Find the original binary, copy it aside, then mount wrapper over it
 		fmt.Fprintf(&sb,
 			"_orig=$(command -v %s 2>/dev/null) && if [ -n \"$_orig\" ]; then cp \"$_orig\" /tmp/.aigate-orig-%s && printf '%%s' '%s' | base64 -d > /tmp/.aigate-wrap-%s && chmod +x /tmp/.aigate-wrap-%s && mount --bind /tmp/.aigate-wrap-%s \"$_orig\" 2>/dev/null; fi\n",
-			baseCmd, baseCmd, encoded, baseCmd, baseCmd, baseCmd)
+			shellQuote(baseCmd), safeName, encoded, safeName, safeName, safeName)
 	}
 
 	return sb.String()

@@ -46,3 +46,33 @@ func (b Block) String() string {
 
 // Error lets a Block be returned where an error is expected.
 func (b Block) Error() string { return b.String() }
+
+// Fixed texts for blocks that happen inside the sandbox, where only a person
+// outside can change the rules.
+const outsideHint = "a person runs, outside the sandbox: "
+
+// DenyReadMarker is what a denied file reads as inside the sandbox.
+func DenyReadMarker() string {
+	return Block{What: "read of this file", Layer: LayerRule, Reason: "it matches a deny_read rule",
+		Fix: outsideHint + "aigate allow read PATTERN (rules: cat /tmp/.aigate-policy)"}.String() + "\n"
+}
+
+// DenyReadDirMarker is the note left in a denied directory.
+func DenyReadDirMarker() string {
+	return Block{What: "read of this folder", Layer: LayerRule, Reason: "it matches a deny_read rule",
+		Fix: outsideHint + "aigate allow read PATTERN (rules: cat /tmp/.aigate-policy)"}.String() + "\n"
+}
+
+// DenyExecShellMessage is text for a double-quoted sh echo: what names the
+// command (may be shell, e.g. $(basename "$0")), allowArg is the argument
+// for `aigate allow exec`.
+func DenyExecShellMessage(what, allowArg string) string {
+	return Block{What: "exec " + what, Layer: LayerRule, Reason: "it is in deny_exec",
+		Fix: outsideHint + "aigate allow exec " + allowArg}.String()
+}
+
+// DenyExecBlock is the pre-run refusal for a denied command or subcommand.
+func DenyExecBlock(entry string) Block {
+	return Block{What: "exec " + entry, Layer: LayerRule, Reason: fmt.Sprintf("%q is in deny_exec", entry),
+		Fix: "aigate allow exec " + shellArg(entry)}
+}
