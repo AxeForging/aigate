@@ -162,6 +162,9 @@ func runLinuxChecks(report *doctorReport) {
 		"sudo dnf install acl   OR   sudo apt install acl")
 
 	unshareOK := checkUserNamespaces(report)
+	if unshareOK && bwrapOK {
+		unshareOK = checkAppArmorUserns(report)
+	}
 
 	fmt.Println()
 	printLinuxIsolationMode(bwrapOK, slirpOK, unshareOK)
@@ -244,6 +247,22 @@ func checkUserNamespaces(report *doctorReport) bool {
 	fmt.Printf("%s %-16s enabled\n", okTag(), "user namespaces")
 	fmt.Printf("          Required for all sandbox modes.\n")
 	return true
+}
+
+// checkAppArmorUserns catches Ubuntu's AppArmor restriction, which lets
+// `unshare --user` pass while blocking bwrap.
+func checkAppArmorUserns(report *doctorReport) bool {
+	problem := services.DetectUsernsProblem()
+	if problem == nil {
+		fmt.Printf("%s %-16s bwrap can create its namespaces\n", okTag(), "apparmor userns")
+		return true
+	}
+	fmt.Printf("%s %-16s blocking bwrap\n", failTag(), "apparmor userns")
+	for _, line := range strings.Split(problem.Error(), "\n") {
+		fmt.Printf("          %s\n", line)
+	}
+	report.step("allow bwrap in AppArmor (see the apparmor userns check above)")
+	return false
 }
 
 // printLinuxIsolationMode describes which sandbox path will be taken based on
