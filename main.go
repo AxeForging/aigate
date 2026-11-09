@@ -53,7 +53,7 @@ func main() {
 			Name:    "init",
 			Aliases: []string{"i"},
 			Usage:   "Create default config (~/.aigate/config.yaml)",
-			Flags:   []cli.Flag{verboseFlag, forceFlag},
+			Flags:   []cli.Flag{verboseFlag, forceFlag, upgradeFlag},
 			Action:  initAction.Execute,
 		},
 		{
