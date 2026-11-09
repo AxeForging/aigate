@@ -51,7 +51,32 @@ func (s *ConfigService) LoadProject(workDir string) (*domain.Config, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil, nil
 	}
+	if err := rejectProjectIdentityKeys(path); err != nil {
+		return nil, err
+	}
 	return s.loadFromFile(path)
+}
+
+// projectIdentityKeys may only appear in the global config: a cloned repo
+// must not be able to pick (or widen) one of the user's identities.
+var projectIdentityKeys = []string{"identity", "default_identity", "identities", "identity_bindings"}
+
+func rejectProjectIdentityKeys(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read config %s: %w", path, err)
+	}
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("failed to parse config %s: %w", path, err)
+	}
+	for _, key := range projectIdentityKeys {
+		if _, ok := raw[key]; ok {
+			return fmt.Errorf("%s sets %q, but a project config can't choose your identity (a cloned repo could pick your work logins). "+
+				"Remove it and bind this folder instead: aigate identity use NAME", path, key)
+		}
+	}
+	return nil
 }
 
 func (s *ConfigService) loadFromFile(path string) (*domain.Config, error) {
