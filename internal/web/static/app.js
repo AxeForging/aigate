@@ -190,7 +190,14 @@ function renderEvents(decisions) {
     updateFilterCount(0, state.decisions.length);
     return;
   }
+  // Allow-once overrides, by call id, so a denial can point at its override.
+  const overrides = new Map(state.decisions
+    .filter((o) => o.kind === 'judge_override' && o.call_id && !(o.reason || '').startsWith('allow-once granted'))
+    .map((o) => [o.call_id, o]));
   el.innerHTML = decisions.map((d, index) => {
+    const later = d.kind === 'judge_decision' && d.call_id ? overrides.get(d.call_id) : null;
+    const laterNote = later
+      ? `<small class="override-who">→ later allowed once by ${escapeHtml(later.os_user || 'a person')}${later.reason ? `: ${escapeHtml(later.reason.replace('allowed once by the user: ', ''))}` : ''}</small>` : '';
     const scores = d.scores ? 'model scores (0–1): ' + Object.entries(d.scores)
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([k, v]) => `${k.replace('action_', 'chose ')} ${v}`).join(' · ') : '';
@@ -199,7 +206,7 @@ function renderEvents(decisions) {
     return `
     <article class="event-row decision-row layer-${escapeHtml(d.layer || '')} kind-${escapeHtml(d.kind || '')}" style="animation-delay:${Math.min(index * 24, 220)}ms">
       <time datetime="${escapeHtml(d.time || '')}">${formatTime(d.time)}</time>
-      <strong>${escapeHtml(kindLabel(d))}</strong>
+      <strong>${escapeHtml(kindLabel(d))}${later ? ' <span class="overridden">(overridden)</span>' : ''}</strong>
       <span class="chips">
         <span class="chip chip-layer" title="layer that decided">${escapeHtml(d.layer || '')}</span>
         ${d.identity ? `<span class="chip chip-identity" title="identity (account)">${escapeHtml(d.identity)}</span>` : ''}
@@ -210,6 +217,7 @@ function renderEvents(decisions) {
         ${d.what && d.reason ? `<small>${escapeHtml(d.reason)}</small>` : ''}
         ${scores ? `<small class="scores">${escapeHtml(scores)}</small>` : ''}
         ${who}
+        ${laterNote}
       </p>
     </article>`;
   }).join('');

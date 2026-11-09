@@ -81,7 +81,7 @@ curl -L https://github.com/AxeForging/aigate/releases/latest/download/aigate-dar
 sudo mv aigate-darwin-arm64 /usr/local/bin/aigate
 ```
 
-### From Source (Go 1.25+)
+### From Source (Go 1.26+)
 ```sh
 go install github.com/AxeForging/aigate@latest
 ```
@@ -185,45 +185,76 @@ aigate status
 
 ### doctor
 
-Check your setup (config, OS accounts, sandbox tooling) and show which
-isolation mode will be active. Ends with a verdict — `READY`, `DEGRADED`, or
-`BLOCKED` — plus copy-pasteable next steps, and exits non-zero when the
-sandbox cannot run so scripts/CI can gate on it:
+Checks everything aigate depends on and ends with one verdict — `READY`, `DEGRADED` or `BLOCKED` — and the exact command to fix each problem. Exits 1 when blocked, so scripts and CI can gate on it.
 
 ```sh
-aigate doctor
+aigate doctor             # human-readable
+aigate doctor --json      # for scripts (versioned schema)
+aigate doctor --report    # home paths, user names and secrets removed: safe to paste in a public issue
+aigate doctor --offline   # don't contact judge model providers
 ```
 
-Example output:
+What it checks: config and scope; sandbox tools (bwrap, slirp4netns, user namespaces, Ubuntu's AppArmor restriction); that agent sockets (ssh-agent, session bus, keyring) are really hidden — it runs a test sandbox to find out; each identity's folders, logins (presence only, never read) and git author; and the judge — on/off, hook installed, model credentials, a live round trip with its latency.
+
 ```
-aigate doctor — environment checks (linux/amd64)
+Sandbox
+ OK    agent sockets          ssh-agent, session bus and keyring sockets hidden inside the sandbox (tested)
+Identities
+ WARN  identity work          Claude not logged in yet; GitHub CLI not logged in yet
+                              fix: aigate run --identity work -- claude
+Judge
+ WARN  judge hook             not installed in ~/.claude-work/settings.json; Claude Code won't call the judge
+                              fix: aigate judge install
+ OK    clef-flash             reachable, 267ms round trip
 
-Setup
-  ok    config           ~/.aigate/config.yaml
-          15 deny_read, 11 deny_exec, 5 allow_net, 6 allowed_paths (scope ON)
-  ok    os accounts      group "ai-agents" and user "ai-runner" exist
-
-Tools
-  ok    bwrap            v0.10.0 (/usr/bin/bwrap)
-  ok    slirp4netns      v1.3.1 (/usr/bin/slirp4netns)
-  ok    user namespaces  enabled
-
-Isolation mode:
-  bwrap + slirp4netns  (full isolation)
-
-Verdict: READY — full isolation available. Try: aigate run -- claude
+Verdict: DEGRADED — aigate runs, with less protection until the WARN lines are fixed.
 ```
+
+### explain
+
+Asks "would this be allowed here, and why?" without running anything. It uses exactly what `aigate run` would enforce in the current folder (config, project `.aigate.yaml`, identity, judge rules). Exits 1 when blocked.
+
+```sh
+aigate explain ~/.ssh/id_ed25519
+aigate explain .env
+aigate explain -- curl https://example.com
+aigate explain --identity personal ~/.config/gh-work/hosts.yml
+aigate explain --judge -- rm -rf ~/        # also ask the judge's models
+```
+
+```
+~/.claude/creds → HIDDEN
+  why:      belongs to identity "personal"; sessions as "work" can't see it
+  layer:    identity (identity personal)
+  to allow: aigate run --identity personal -- …
+```
+
+Paths come back as `read-write`, `read-only`, `hidden` or `blocked`; commands as `allowed`, `allowed, but the judge would ask you first` or `BLOCKED`.
+
+### Block messages
+
+Every layer reports a block the same way, inside and outside the sandbox:
+
+```
+[aigate] blocked <what> — <layer>: <reason>. To allow: <command>
+```
+
+Layers: `sandbox` (scope, system paths), `rule` (deny_read / deny_exec / allow_net), `identity`, `judge`. Inside the sandbox the hint starts with "a person runs, outside the sandbox:" — the agent can't change rules itself.
 
 ### serve
 
-Run a local web dashboard over the audit log. Read-only, binds to loopback by default — nothing is exposed off-host.
+A local, read-only dashboard over the audit log. Binds to 127.0.0.1 by default; dark theme.
 
 ```sh
 aigate serve                          # http://127.0.0.1:8080
 aigate serve --addr 127.0.0.1:9000    # custom address (or AIGATE_ADDR env var)
 ```
 
-The dashboard shows live counters and a timeline of `run_started` and `blocked` events drawn from `~/.aigate/audit.jsonl` (see [Audit log](#audit-log)).
+- **Recent decisions**: every rule block, judge verdict (with model scores), override (who allowed what, and why) and fallback; a denial that was later allowed once says so. Filter by event, layer, identity or text.
+- **Identities**: one card per identity with its folders, what a session can reach, last use, problems and copy-able fix commands.
+- Everything shown is secret-masked on the server, even old audit lines written before masking existed.
+
+Try it with sample data: `scripts/dash-seed.sh /tmp/aigate-demo && HOME=/tmp/aigate-demo /tmp/aigate-demo/bin/aigate serve`.
 
 ### reset
 

@@ -22,7 +22,12 @@ services/        Core business logic
   platform_darwin.go          macOS: chmod +a, dscl, sandbox-exec (Seatbelt rules use resolved paths)
   identity_service.go         Identity validate / resolve (flag → folder → default) / per-identity allowlist
   identity_env.go             Env set/unset per identity (shared by Linux + macOS)
-  block_message.go            One "[aigate] blocked … — layer: … To allow: …" format
+  block_message.go            One "[aigate] blocked … — layer: … To allow: …" format, used by deny_read
+                              markers, deny_exec stubs/wrappers, pre-run refusals and the judge
+  doctor_checks.go            Doctor check units {id, group, name, status, detail, fix}, verdict,
+                              identity + judge checks, --report redaction
+  explain_service.go          aigate explain: path/command → access, layer, rule, fix
+  audit_query.go              Dashboard rows (decisions) and identity cards, masked
   userns_check.go             Detect Ubuntu AppArmor user-namespace block + printed fix
   pty.go                      PTY passthrough; stoppable stdin copy
   judge_config.go             judge: settings, defaults, validation (env var names only)
@@ -57,7 +62,8 @@ actions/         CLI command handlers
   whoami.go      Which identity runs here and why
   status.go      Show current sandbox state
   reset.go       Remove group, user, config
-  doctor.go      Check prerequisites and active isolation mode
+  doctor.go      Runs checks (incl. a real sandbox probe for agent sockets); text / --json / --report
+  explain.go     aigate explain; shares buildRunProfile with run.go so they can't disagree
   help_ai.go     Print AI-friendly usage reference
   (serve is defined inline in main.go)
 
@@ -125,3 +131,9 @@ make test-vm DISTRO=ubuntu-24.04   # or DISTRO=all
 - `github.com/urfave/cli` v1 - CLI framework
 - `github.com/rs/zerolog` - Structured logging
 - `gopkg.in/yaml.v3` - Config file parsing
+
+## Doctor, explain, dashboard
+
+- **Doctor** checks are data (`services.Check`); renderers only print. Add a check by returning one more `Check` with a `Fix` the user can paste. `note` never changes the verdict; `warn` → DEGRADED; `fail` → BLOCKED (exit 1).
+- **Explain** must agree with `run`: both build the profile with `actions.buildRunProfile`, and `TestExplain_AgreesWithRun` reads each case in a real sandbox. When adding a sandbox rule, add its case to `ExplainPath`/`ExplainCommand` *and* that table.
+- **Dashboard** data comes from `/api/overview`, `/api/decisions`, `/api/identities`; every text field is masked server-side, and `TestDashboard_NeverShowsSecrets` plants an unmasked canary in the audit log. UI changes are validated in a browser on data from `scripts/dash-seed.sh`.

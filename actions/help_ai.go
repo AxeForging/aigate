@@ -100,13 +100,23 @@ RUNNING SANDBOXED
 
 CHECKING STATUS
   aigate status                            # Show all rules, group/user, limits
+  aigate doctor                            # Verdict + fix for every problem (exit 1 if blocked)
+  aigate doctor --json | --report          # For scripts | safe to paste in an issue
+  aigate explain ~/.ssh/id_ed25519         # Would this be readable here? Which layer decides?
+  aigate explain -- curl https://x.com     # Would this command run? (runs nothing; exit 1 if not)
+
+BLOCK MESSAGES (same format from every layer)
+  [aigate] blocked <what> — <layer>: <reason>. To allow: <command>
+  Layers: sandbox, rule, identity, judge. Inside the sandbox only a person can
+  run the "To allow" command — tell the user instead of retrying.
 
 DASHBOARD & AUDIT LOG
-  Every run and blocked command is appended to ~/.aigate/audit.jsonl (JSON Lines).
-  Events: run_started (rule counts) and blocked (matched deny_exec rule).
+  Every run, block, judge verdict, override and fallback is appended to
+  ~/.aigate/audit.jsonl (JSON Lines). Kinds: run_started, blocked,
+  judge_decision, judge_override, judge_fallback.
 
   tail -f ~/.aigate/audit.jsonl            # Follow events as plain text
-  aigate serve                             # Local web dashboard → http://127.0.0.1:8080
+  aigate serve                             # Dashboard: decisions timeline + identities → http://127.0.0.1:8080
   aigate serve --addr 127.0.0.1:9000       # Custom address (or AIGATE_ADDR env var)
 
 CONFIGURATION

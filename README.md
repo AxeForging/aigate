@@ -73,7 +73,8 @@ flowchart LR
 | `aigate deny read\|exec\|net …` / `aigate allow …` | Change rules (`.aigate.yaml` per project) |
 | `aigate identity add\|use\|list\|show\|remove`, `aigate whoami` | Manage identities |
 | `aigate judge install\|uninstall\|eval\|allow-once ID` | Manage the judge |
-| `aigate doctor`, `aigate status`, `aigate serve` | Check, inspect, watch |
+| `aigate explain PATH` / `aigate explain -- CMD` | Would it be allowed here? Which layer decides, how to change it |
+| `aigate doctor [--json\|--report]`, `aigate status`, `aigate serve` | Check, inspect, watch |
 
 Everything else: `aigate --help`, `aigate help-ai`.
 

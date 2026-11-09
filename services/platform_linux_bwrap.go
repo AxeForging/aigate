@@ -188,7 +188,7 @@ func (p *LinuxPlatform) buildBwrapArgs(profile domain.SandboxProfile, tmpFiles *
 				args = append(args, "--tmpfs", path)
 			} else {
 				if denyMarkerPath == "" {
-					const denyMsg = "[aigate] access denied: this file is protected by sandbox policy. See /tmp/.aigate-policy for all active restrictions.\n"
+					denyMsg := DenyReadMarker()
 					denyMarkerPath, err = writeTmpFile("aigate-denied-*", denyMsg)
 					if err != nil {
 						return nil, fmt.Errorf("write deny marker: %w", err)
@@ -556,7 +556,7 @@ func resolveForBwrap(path string) string {
 	return path
 }
 
-const bwrapDenyExecScript = "#!/bin/sh\necho \"[aigate] blocked: this command is denied by sandbox policy\" >&2\nexit 126\n"
+var bwrapDenyExecScript = "#!/bin/sh\necho \"" + DenyExecShellMessage(`$(basename "$0")`, `$(basename "$0")`) + "\" >&2\nexit 126\n"
 
 // buildBwrapExecDenyArgs generates bwrap bind-mount args for deny_exec rules.
 //
@@ -641,16 +641,19 @@ func buildBwrapExecDenyArgs(profile domain.SandboxProfile) (bwrapArgs []string, 
 
 		// The resolved (non-symlink) path is used as the bwrap bind destination.
 		resolvedPath := resolveForBwrap(origPath)
-		origInSandbox := fmt.Sprintf("/tmp/.aigate-orig-%s", baseCmd)
+		// Entries may be full paths (/opt/x/tool rm): only the name goes into
+		// file names.
+		safeName := filepath.Base(baseCmd)
+		origInSandbox := fmt.Sprintf("/tmp/.aigate-orig-%s", safeName)
 
 		var caseArms strings.Builder
 		for _, sub := range subs {
-			fmt.Fprintf(&caseArms, "%s) echo \"[aigate] blocked: '%s %s' is denied by sandbox policy\" >&2; exit 126;; ", sub, baseCmd, sub)
+			fmt.Fprintf(&caseArms, "%s) echo \"%s\" >&2; exit 126;; ", sub, DenyExecShellMessage(baseCmd+" "+sub, "'"+baseCmd+" "+sub+"'"))
 		}
 		wrapper := fmt.Sprintf("#!/bin/sh\nfor _a in \"$@\"; do case \"$_a\" in %s*) break;; esac; done\nexec %s \"$@\"\n",
 			caseArms.String(), origInSandbox)
 
-		wrapPath, wrapErr := writeTmpFile(fmt.Sprintf("aigate-wrap-%s-*", baseCmd), wrapper)
+		wrapPath, wrapErr := writeTmpFile(fmt.Sprintf("aigate-wrap-%s-*", safeName), wrapper)
 		if wrapErr != nil {
 			return nil, tmpFiles, fmt.Errorf("write wrapper for %q: %w", baseCmd, wrapErr)
 		}
