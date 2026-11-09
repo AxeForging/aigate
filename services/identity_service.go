@@ -91,7 +91,9 @@ func (s *IdentityService) validateOne(name string, id domain.Identity, owners ma
 		}
 		for other, owner := range owners {
 			if owner != name && (p == other || underAny(p, []string{other}) || underAny(other, []string{p})) {
-				bad(fmt.Sprintf("%s %s overlaps identity %q (%s); each identity needs its own dirs", d.key, d.val, owner, other), "")
+				// Global: it concerns two identities, so it blocks every run.
+				ps = append(ps, IdentityProblem{Fatal: true, Message: fmt.Sprintf(
+					"identity %q: %s %s overlaps identity %q (%s); each identity needs its own dirs", name, d.key, d.val, owner, other)})
 			}
 		}
 		owners[p] = name

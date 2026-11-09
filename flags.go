@@ -44,3 +44,8 @@ var allowPathFlag = cli.StringSliceFlag{
 	Name:  "allow-path, p",
 	Usage: "Session-only scope path (repeatable); with scope active, only the workdir and allowed paths are accessible",
 }
+
+var identityFlag = cli.StringFlag{
+	Name:  "identity, i",
+	Usage: "Run as this identity (see: aigate identity list). Default: the identity bound to this folder, then default_identity",
+}

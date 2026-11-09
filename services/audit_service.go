@@ -19,15 +19,16 @@ const auditLogFile = "audit.jsonl"
 
 // AuditEvent is a compact event record used by the local dashboard.
 type AuditEvent struct {
-	Time    time.Time         `json:"time"`
-	Kind    string            `json:"kind"`
-	Rule    string            `json:"rule,omitempty"`
-	Command string            `json:"command,omitempty"`
-	WorkDir string            `json:"work_dir,omitempty"`
-	Source  string            `json:"source,omitempty"`
-	Detail  string            `json:"detail,omitempty"`
-	Counts  map[string]int    `json:"counts,omitempty"`
-	Meta    map[string]string `json:"meta,omitempty"`
+	Time     time.Time         `json:"time"`
+	Kind     string            `json:"kind"`
+	Identity string            `json:"identity,omitempty"`
+	Rule     string            `json:"rule,omitempty"`
+	Command  string            `json:"command,omitempty"`
+	WorkDir  string            `json:"work_dir,omitempty"`
+	Source   string            `json:"source,omitempty"`
+	Detail   string            `json:"detail,omitempty"`
+	Counts   map[string]int    `json:"counts,omitempty"`
+	Meta     map[string]string `json:"meta,omitempty"`
 }
 
 type AuditService struct {
@@ -72,9 +73,10 @@ func (s *AuditService) Log(event AuditEvent) error {
 
 func (s *AuditService) LogRunStarted(profile domain.SandboxProfile, cmd string, args []string) {
 	_ = s.Log(AuditEvent{
-		Kind:    "run_started",
-		Command: formatCommand(cmd, args),
-		WorkDir: profile.WorkDir,
+		Kind:     "run_started",
+		Identity: identityName(profile),
+		Command:  formatCommand(cmd, args),
+		WorkDir:  profile.WorkDir,
 		Counts: map[string]int{
 			"deny_read": len(profile.Config.DenyRead),
 			"deny_exec": len(profile.Config.DenyExec),
@@ -86,12 +88,13 @@ func (s *AuditService) LogRunStarted(profile domain.SandboxProfile, cmd string, 
 
 func (s *AuditService) LogBlocked(profile domain.SandboxProfile, cmd string, args []string, rule, source, detail string) {
 	_ = s.Log(AuditEvent{
-		Kind:    "blocked",
-		Rule:    rule,
-		Command: formatCommand(cmd, args),
-		WorkDir: profile.WorkDir,
-		Source:  source,
-		Detail:  detail,
+		Kind:     "blocked",
+		Identity: identityName(profile),
+		Rule:     rule,
+		Command:  formatCommand(cmd, args),
+		WorkDir:  profile.WorkDir,
+		Source:   source,
+		Detail:   detail,
 	})
 }
 
@@ -202,4 +205,11 @@ func (w *auditWriter) inspect(line string) {
 		return
 	}
 	w.audit.LogBlocked(w.profile, w.cmd, w.args, rule, w.source, line)
+}
+
+func identityName(profile domain.SandboxProfile) string {
+	if profile.Identity == nil {
+		return ""
+	}
+	return profile.Identity.Name
 }
