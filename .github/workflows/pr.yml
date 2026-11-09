@@ -113,8 +113,12 @@ jobs:
             grep -Eq "apparmor userns +bwrap can create its namespaces" /tmp/doctor.txt
           fi
       - name: debug userns capabilities (temporary)
+        shell: bash {0}
         run: |
-          uname -r; iptables --version; cat /proc/sys/kernel/apparmor_restrict_unprivileged_* 2>/dev/null; ls /proc/sys/kernel | grep -i apparmor || true
-          bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --unshare-user --unshare-pid --uid 0 --gid 0 --cap-add cap_net_admin --cap-add cap_sys_admin --unshare-net -- sh -c 'grep -E "^Cap(Eff|Bnd)" /proc/self/status; cat /proc/self/attr/current; iptables -S OUTPUT; echo "iptables=$?"; cat /proc/self/attr/apparmor/current 2>/dev/null' || true
-          sudo dmesg | grep -i -E "apparmor.*(DENIED|denied)" | tail -20 || true
+          for f in /proc/sys/kernel/apparmor_restrict_*; do echo "$f=$(cat $f)"; done
+          probe() { bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --unshare-user --unshare-pid --uid 0 --gid 0 --cap-add cap_net_admin --cap-add cap_sys_admin --unshare-net -- sh -c 'grep -E "^Cap(Eff|Bnd)" /proc/self/status; echo "label=$(cat /proc/self/attr/current)"; iptables -S OUTPUT; echo "iptables=$?"'; }
+          echo "== as configured"; probe
+          echo "== unconfined restriction off"; sudo sysctl -w kernel.apparmor_restrict_unprivileged_unconfined=0; probe
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_unconfined=1
+          sudo dmesg | grep -i apparmor | tail -15
       - run: go test -race -count=1 ./...
