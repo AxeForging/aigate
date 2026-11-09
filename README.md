@@ -35,6 +35,10 @@ aigate allow path ~/experiments   # scope: only workdir + allowed paths accessib
 # Run any AI tool inside the sandbox
 aigate run -- claude
 aigate run -- cursor
+
+# Several accounts? Each identity only sees its own logins
+aigate identity add work && cd ~/work && aigate identity use work
+aigate whoami
 ```
 
 ## Why?
@@ -53,6 +57,7 @@ AI coding tools rely on application-level permission systems that can be bypasse
 - **Filesystem scope** - `allowed_paths` hides everything in `$HOME` except the working directory and the paths you allow — non-scoped files are invisible to the agent (reads *and* writes blocked at the kernel)
 - **Process isolation** - Bubblewrap (`bwrap`) + mount namespaces isolate the sandbox declaratively (Linux); Seatbelt on macOS
 - **Network isolation** - `bwrap --unshare-net` + `slirp4netns` + `iptables` (+ `ip6tables` for IPv6 when available) restrict egress to allowed domains (Linux)
+- **Identities** - Separate Claude Code / GitHub CLI logins, git author and ssh key per account (work, personal, clients); a session can't see the other identities' logins. Guided setup with `aigate identity add`
 - **Command blocking** - Deny execution of dangerous commands (curl, wget, ssh)
 - **Output masking** - Redact secrets (API keys, tokens) from stdout/stderr before they reach the terminal
 - **Audit log + dashboard** - Every run and blocked command is recorded to `~/.aigate/audit.jsonl`; `aigate serve` exposes a local web dashboard over it
@@ -83,6 +88,10 @@ aigate deny path ~/experiments              # Narrow it again (empty = scope off
 aigate allow read .env                      # Remove a deny rule
 aigate run -- claude                        # Run AI tool in sandbox
 aigate run --allow-path ~/notes -- claude   # Session-only scope addition
+aigate identity add work                    # New identity: own Claude/gh logins, git author, ssh key
+aigate identity use work                    # This folder runs as work
+aigate whoami                               # Which identity runs here, and why
+aigate run --identity personal -- claude    # Pick an identity for one run
 aigate status                               # Show current rules
 aigate serve                                # Local web dashboard over the audit log
 aigate help-ai                              # Show AI-friendly usage examples

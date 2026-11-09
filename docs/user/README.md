@@ -103,7 +103,12 @@ aigate deny exec curl wget ssh
 aigate run -- claude
 aigate run -- cursor
 aigate run -- aider
+
+# 5. (Optional) several accounts: one identity each
+aigate identity add work
 ```
+
+See [Identities](#identities-several-accounts-on-one-machine) for multiple accounts.
 
 ## Commands
 
@@ -392,9 +397,98 @@ are missing instead of chasing phantom errors.
 > loud warning when this happens — `cd` into a project directory to get
 > enforcement.
 
+### Identities (several accounts on one machine)
+
+Use identities when you have more than one account — work, personal, a client
+— each with its own Claude Code login, GitHub CLI login, git author and ssh
+key. A session under one identity **can't see the others**: their folders are
+hidden by the kernel, not just pointed elsewhere.
+
+**Start in one command:**
+
+```sh
+aigate identity add personal   # first one: offers to reuse your current ~/.claude and ~/.config/gh
+aigate identity add work       # asks for folders, git author, ssh key, then logs in to Claude and gh
+cd ~/work && aigate identity use work
+aigate whoami                  # identity: work … why: folder ~/work
+aigate run -- claude           # [aigate] identity: work (folder ~/work)
+```
+
+**Everyday commands**
+
+| Command | What it does |
+|---|---|
+| `aigate identity add NAME` | Guided setup; `--yes` for scripts, plus `--claude-dir`, `--gh-dir`, `--git-name`, `--git-email`, `--ssh-key`, `--default`, `--use`, `--login` |
+| `aigate identity use NAME [FOLDER]` | Bind a folder (and everything inside it); `use none` unbinds |
+| `aigate whoami` | Which identity runs here and why |
+| `aigate identity list` / `show NAME` | Overview / details with problems and their fixes |
+| `aigate identity remove NAME` | Remove from config (login folders are kept) |
+| `aigate run --identity NAME -- …` | Pick an identity for one run |
+
+**Which identity runs:** `--identity` flag → the deepest bound folder → `default_identity` → none (today's behavior). The first line of every run says which one and why.
+
+**Config** (`~/.aigate/config.yaml`, written for you by the commands above):
+
+```yaml
+default_identity: personal
+identities:
+  personal:
+    claude_dir: ~/.claude          # your existing login, kept as-is
+    gh_dir: ~/.config/gh
+    git: { name: Jane, email: jane@home.example }
+  work:
+    claude_dir: ~/.claude-work
+    gh_dir: ~/.config/gh-work
+    git: { name: Jane Doe, email: jane@work.example }
+    ssh_key: ~/.ssh/id_work        # optional; mounted read-only, used via GIT_SSH_COMMAND
+    allowed_paths: [~/work-notes]  # optional extra paths for this identity
+    pass_env: []                   # host credential vars to keep (unset by default)
+identity_bindings:
+  ~/work: work
+```
+
+**What a session gets:** only its identity's folders (plus caches and installed
+tools such as `~/.cache`, `~/.npm`, `~/.local/bin`), `CLAUDE_CONFIG_DIR`,
+`GH_CONFIG_DIR`, the git author/committer, `GIT_SSH_COMMAND` for its key (never
+an ssh-agent), and `AIGATE_IDENTITY`. Host credential variables such as
+`ANTHROPIC_API_KEY`, `GH_TOKEN` and `GITHUB_TOKEN` are removed unless listed in
+`pass_env`. The identity on `~/.claude` leaves `CLAUDE_CONFIG_DIR` unset so
+Claude Code keeps using `~/.claude.json` and (on macOS) the same Keychain item
+as before.
+
+**Safety rules**
+
+- A project `.aigate.yaml` can't select or widen an identity — a cloned repo
+  could otherwise pick your work logins. Bind folders with `aigate identity use`.
+- If any allowed path would expose another identity (e.g. `~/.config` while
+  another identity uses `~/.config/gh`), the run stops and names both.
+- Two identities can't share or nest their folders.
+
+**Platforms**
+
+| | Linux (bwrap) | macOS (Seatbelt) |
+|---|---|---|
+| Other identities' files, gh login, ssh keys | hidden | hidden |
+| Git author per identity | yes | yes |
+| Claude login | separate folder, hidden | separate Keychain item, **not** access-isolated — `aigate doctor` explains |
+
+Tested on Fedora 43/44, Ubuntu 22.04/24.04, Debian 12/13, Arch, Rocky 9 and
+macOS (`make test-vm DISTRO=all` runs the Linux matrix in throwaway VMs).
+
+**Common messages**
+
+| You see | Do |
+|---|---|
+| `identity: none (pick one with --identity NAME …)` | `aigate identity use NAME` in the project folder |
+| `allowed path … exposes identity "x"` | Remove that path from `allowed_paths`, or list a narrower one |
+| `… sets "identity", but a project config can't choose your identity` | Delete the key from `.aigate.yaml`; run `aigate identity use NAME` |
+| `claude_dir … does not exist` | Run the printed `mkdir -p …`, then log in: `aigate run --identity NAME -- claude` |
+| `AppArmor is blocking the user namespaces bubblewrap needs` (Ubuntu 23.10+) | Run the printed AppArmor profile commands |
+
 ### Project Config (.aigate.yaml)
 
-Place in your project root to extend global rules:
+Place in your project root to extend global rules (identity keys are not
+allowed here — see [Identities](#identities-several-accounts-on-one-machine)):
 
 ```yaml
 deny_read:

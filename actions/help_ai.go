@@ -61,6 +61,22 @@ FILESYSTEM SCOPE (allowed_paths)
   Caveat: running from $HOME itself disables enforcement (the working
   directory is always accessible) — aigate warns loudly when this happens.
 
+IDENTITIES (several accounts on one machine)
+  Each identity has its own Claude login, gh login, git author and optional ssh
+  key. A session only sees the active identity's logins; other identities'
+  folders are hidden by the kernel.
+
+  aigate identity add work                 # Guided setup: folders, git author, ssh key, logins
+  aigate identity use work                 # This folder (and inside it) runs as work
+  aigate identity use none                 # Unbind this folder
+  aigate whoami                            # Which identity runs here, and why
+  aigate identity list                     # All identities (* = active here)
+  aigate run --identity personal -- claude # Pick one for a single run
+
+  A repo's .aigate.yaml can't choose an identity (a cloned repo could pick
+  your work logins); bind folders with 'aigate identity use' instead.
+  Inside the sandbox: $AIGATE_IDENTITY names the active identity.
+
 RUNNING SANDBOXED
   aigate run -- claude                     # Run Claude in sandbox
   aigate run -- aider                      # Run any AI tool
