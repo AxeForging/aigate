@@ -57,15 +57,7 @@ func newIdentityFixture(t *testing.T, extraAllowed, passEnv string) identityFixt
 		".cache/.keep":           "",
 		".config/other-app/conf": "unrelated",
 	}
-	for rel, content := range files {
-		p := filepath.Join(home, rel)
-		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	writeTree(t, home, 0o600, files)
 	env := append(os.Environ(),
 		"HOME="+home,
 		"GH_TOKEN=canary-host-gh-token",
@@ -94,11 +86,7 @@ echo "TOKENS=${GH_TOKEN:-}${ANTHROPIC_API_KEY:-}"
 echo MARKER_DONE`
 
 func TestIdentity_BoundFolderSelectsAndIsolates(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox integration test in short mode")
-	}
-	bin := buildBinary(t)
-	f := newIdentityFixture(t, "", "")
+	bin, f := identitySetup(t, "", "")
 
 	out := mustRun(t, f, bin, f.workDir, nil, probeAllIdentities)
 	for _, want := range []string{
@@ -116,11 +104,7 @@ func TestIdentity_BoundFolderSelectsAndIsolates(t *testing.T) {
 }
 
 func TestIdentity_FlagOverridesBinding(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox integration test in short mode")
-	}
-	bin := buildBinary(t)
-	f := newIdentityFixture(t, "", "")
+	bin, f := identitySetup(t, "", "")
 
 	out := mustRun(t, f, bin, f.workDir, []string{"--identity", "personal"}, probeAllIdentities)
 	for _, want := range []string{"[aigate] identity: personal (--identity flag)", "canary-personal-claude",
@@ -133,11 +117,7 @@ func TestIdentity_FlagOverridesBinding(t *testing.T) {
 }
 
 func TestIdentity_CannotWriteOtherIdentity(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox integration test in short mode")
-	}
-	bin := buildBinary(t)
-	f := newIdentityFixture(t, "", "")
+	bin, f := identitySetup(t, "", "")
 
 	mustRun(t, f, bin, f.workDir, nil,
 		`echo tampered > ~/.claude/creds 2>/dev/null; echo tampered > ~/.config/gh/hosts 2>/dev/null; echo MARKER_DONE`)
@@ -167,11 +147,7 @@ func TestIdentity_GitCommitUsesIdentityAuthor(t *testing.T) {
 }
 
 func TestIdentity_PassEnvKeepsListedVar(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox integration test in short mode")
-	}
-	bin := buildBinary(t)
-	f := newIdentityFixture(t, "", "GH_TOKEN")
+	bin, f := identitySetup(t, "", "GH_TOKEN")
 
 	out := mustRun(t, f, bin, f.workDir, nil, `echo "GH=${GH_TOKEN:-} AK=${ANTHROPIC_API_KEY:-}"; echo MARKER_DONE`)
 	if !strings.Contains(out, "GH=canary-host-gh-token AK=\n") {
@@ -179,73 +155,46 @@ func TestIdentity_PassEnvKeepsListedVar(t *testing.T) {
 	}
 }
 
-func TestIdentity_AllowedPathExposingOtherIdentityRefused(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox integration test in short mode")
+// TestIdentity_Refusals: each case must stop before the command runs and say
+// how to fix it.
+func TestIdentity_Refusals(t *testing.T) {
+	tests := []struct {
+		name          string
+		extraAllowed  string // appended to global allowed_paths
+		projectConfig string // .aigate.yaml in the oss folder
+		inOss         bool
+		flags         []string
+		want          []string
+	}{
+		{name: "allowed path exposes another identity", extraAllowed: `, "~/.config/gh"`,
+			want: []string{`exposes identity "personal"`}},
+		{name: "repo config selects identity", projectConfig: "identity: work\n", inOss: true,
+			want: []string{"aigate identity use"}},
+		{name: "broken project config", projectConfig: "deny_read: [unclosed\n", inOss: true},
+		{name: "unknown --identity", flags: []string{"--identity", "ghost"},
+			want: []string{"personal, work", "aigate identity add ghost"}},
 	}
-	bin := buildBinary(t)
-	f := newIdentityFixture(t, `, "~/.config/gh"`, "")
-
-	out, err := f.runAs(t, bin, f.workDir, nil, "echo SHOULD_NOT_RUN")
-	if err == nil || strings.Contains(out, "SHOULD_NOT_RUN") {
-		t.Fatalf("run should be refused:\n%s", out)
-	}
-	if !strings.Contains(out, `exposes identity "personal"`) {
-		t.Errorf("refusal should name the exposed identity:\n%s", out)
-	}
-}
-
-func TestIdentity_ProjectConfigCannotChooseIdentity(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox integration test in short mode")
-	}
-	bin := buildBinary(t)
-	f := newIdentityFixture(t, "", "")
-	if err := os.WriteFile(filepath.Join(f.ossDir, ".aigate.yaml"), []byte("identity: work\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	out, err := f.runAs(t, bin, f.ossDir, nil, "echo SHOULD_NOT_RUN")
-	if err == nil || strings.Contains(out, "SHOULD_NOT_RUN") || !strings.Contains(out, "aigate identity use") {
-		t.Errorf("repo config selecting identity must be refused with the bind command:\n%s", out)
-	}
-}
-
-func TestIdentity_BrokenProjectConfigStopsRun(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox integration test in short mode")
-	}
-	bin := buildBinary(t)
-	f := newIdentityFixture(t, "", "")
-	if err := os.WriteFile(filepath.Join(f.ossDir, ".aigate.yaml"), []byte("deny_read: [unclosed\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	out, err := f.runAs(t, bin, f.ossDir, nil, "echo SHOULD_NOT_RUN")
-	if err == nil || strings.Contains(out, "SHOULD_NOT_RUN") {
-		t.Errorf("a broken project config must stop the run, not be ignored:\n%s", out)
-	}
-}
-
-func TestIdentity_UnknownFlagListsIdentities(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox integration test in short mode")
-	}
-	bin := buildBinary(t)
-	f := newIdentityFixture(t, "", "")
-
-	out, err := f.runAs(t, bin, f.workDir, []string{"--identity", "ghost"}, "echo SHOULD_NOT_RUN")
-	if err == nil || !strings.Contains(out, "personal, work") || !strings.Contains(out, "aigate identity add ghost") {
-		t.Errorf("unknown identity should list options and the add command:\n%s", out)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bin, f := identitySetup(t, tt.extraAllowed, "")
+			dir := f.workDir
+			if tt.inOss {
+				dir = f.ossDir
+			}
+			if tt.projectConfig != "" {
+				writeTree(t, dir, 0o644, map[string]string{".aigate.yaml": tt.projectConfig})
+			}
+			out, err := f.runAs(t, bin, dir, tt.flags, "echo SHOULD_NOT_RUN")
+			if err == nil || strings.Contains(out, "SHOULD_NOT_RUN") {
+				t.Fatalf("run should be refused:\n%s", out)
+			}
+			mustContain(t, out, tt.want...)
+		})
 	}
 }
 
 func TestIdentity_UnboundFolderSaysNone(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox integration test in short mode")
-	}
-	bin := buildBinary(t)
-	f := newIdentityFixture(t, "", "")
+	bin, f := identitySetup(t, "", "")
 	other := filepath.Join(f.home, "elsewhere")
 	if err := os.MkdirAll(other, 0o755); err != nil {
 		t.Fatal(err)
@@ -258,11 +207,7 @@ func TestIdentity_UnboundFolderSaysNone(t *testing.T) {
 }
 
 func TestIdentity_AuditRecordsIdentity(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox integration test in short mode")
-	}
-	bin := buildBinary(t)
-	f := newIdentityFixture(t, "", "")
+	bin, f := identitySetup(t, "", "")
 
 	mustRun(t, f, bin, f.workDir, nil, "echo MARKER_DONE")
 	b, err := os.ReadFile(filepath.Join(f.home, ".aigate", "audit.jsonl"))
@@ -287,6 +232,16 @@ func TestIdentity_NoIdentitiesNoBanner(t *testing.T) {
 	if err != nil || strings.Contains(string(out), "identity:") {
 		t.Errorf("without identities nothing identity-related should appear: %v\n%s", err, out)
 	}
+}
+
+// identitySetup skips in -short mode, then builds aigate and the fixture.
+func identitySetup(t *testing.T, extraAllowed, passEnv string) (string, identityFixture) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping sandbox integration test in short mode")
+	}
+	f := newIdentityFixture(t, extraAllowed, passEnv)
+	return buildBinary(t), f
 }
 
 func mustRun(t *testing.T, f identityFixture, bin, dir string, flags []string, script string) string {

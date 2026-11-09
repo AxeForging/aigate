@@ -40,15 +40,7 @@ func addHome(t *testing.T, withOther bool) (home string, env []string) {
 		".config/gh-other/.keep":  "",
 		"projects/app/.gitignore": "",
 	}
-	for rel, content := range files {
-		p := filepath.Join(home, rel)
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
+	writeTree(t, home, 0o755, files)
 	env = append(os.Environ(), "HOME="+home, "PATH="+filepath.Join(home, ".local/bin")+":"+os.Getenv("PATH"))
 	return home, env
 }
@@ -150,17 +142,8 @@ func TestIdentityAdd_InteractiveAdoptsExistingLogins(t *testing.T) {
 	skipWithoutSandbox(t)
 	bin := buildBinary(t)
 	home, env := addHome(t, false)
-	for _, d := range []string{".claude", ".config/gh", ".ssh"} {
-		if err := os.MkdirAll(filepath.Join(home, d), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(home, ".claude/existing"), []byte("mine"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".ssh/id_test"), []byte("fake-key-for-tests"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	mkdirs(t, home, ".config/gh")
+	writeTree(t, home, 0o600, map[string]string{".claude/existing": "mine", ".ssh/id_test": "fake-key-for-tests"})
 
 	c, err := expect.NewConsole(expect.WithDefaultTimeout(15 * time.Second))
 	if err != nil {

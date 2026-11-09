@@ -43,6 +43,15 @@ func identityHome(t *testing.T) (home string, cfg *domain.Config) {
 	return home, cfg
 }
 
+// mutateWork returns a config mutation that edits the "work" identity.
+func mutateWork(f func(w *domain.Identity)) func(c *domain.Config) {
+	return func(c *domain.Config) {
+		w := c.Identities["work"]
+		f(&w)
+		c.Identities["work"] = w
+	}
+}
+
 func fatalProblems(ps []IdentityProblem) []string {
 	var out []string
 	for _, p := range ps {
@@ -76,26 +85,10 @@ func TestValidate_Problems(t *testing.T) {
 	}{
 		{"bad name", func(c *domain.Config) { c.Identities["Bad Name!"] = c.Identities["work"] }, true, "invalid identity name", ""},
 		{"reserved name", func(c *domain.Config) { c.Identities["none"] = c.Identities["work"] }, true, "reserved", ""},
-		{"missing claude_dir", func(c *domain.Config) {
-			w := c.Identities["work"]
-			w.ClaudeDir = ""
-			c.Identities["work"] = w
-		}, true, "claude_dir is required", ""},
-		{"relative dir", func(c *domain.Config) {
-			w := c.Identities["work"]
-			w.GhDir = "gh-work"
-			c.Identities["work"] = w
-		}, true, "must be absolute or start with ~/", ""},
-		{"dir does not exist", func(c *domain.Config) {
-			w := c.Identities["work"]
-			w.ClaudeDir = "~/.claude-new"
-			c.Identities["work"] = w
-		}, true, "does not exist", "mkdir -p"},
-		{"ssh key missing", func(c *domain.Config) {
-			w := c.Identities["work"]
-			w.SSHKey = "~/.ssh/nope"
-			c.Identities["work"] = w
-		}, true, "ssh_key", ""},
+		{"missing claude_dir", mutateWork(func(w *domain.Identity) { w.ClaudeDir = "" }), true, "claude_dir is required", ""},
+		{"relative dir", mutateWork(func(w *domain.Identity) { w.GhDir = "gh-work" }), true, "must be absolute or start with ~/", ""},
+		{"dir does not exist", mutateWork(func(w *domain.Identity) { w.ClaudeDir = "~/.claude-new" }), true, "does not exist", "mkdir -p"},
+		{"ssh key missing", mutateWork(func(w *domain.Identity) { w.SSHKey = "~/.ssh/nope" }), true, "ssh_key", ""},
 		{"shared dir between identities", func(c *domain.Config) {
 			p := c.Identities["personal"]
 			p.GhDir = "~/.config/gh-work"
@@ -108,16 +101,8 @@ func TestValidate_Problems(t *testing.T) {
 		}, true, "overlaps", ""},
 		{"unknown default", func(c *domain.Config) { c.DefaultIdentity = "ghost" }, true, "default_identity", "aigate identity add ghost"},
 		{"binding to unknown", func(c *domain.Config) { c.IdentityBindings["~/x"] = "ghost" }, true, "ghost", ""},
-		{"bad pass_env name", func(c *domain.Config) {
-			w := c.Identities["work"]
-			w.PassEnv = []string{"NOT VALID"}
-			c.Identities["work"] = w
-		}, true, "pass_env", ""},
-		{"missing git email is a warning", func(c *domain.Config) {
-			w := c.Identities["work"]
-			w.Git.Email = ""
-			c.Identities["work"] = w
-		}, false, "git.email", ""},
+		{"bad pass_env name", mutateWork(func(w *domain.Identity) { w.PassEnv = []string{"NOT VALID"} }), true, "pass_env", ""},
+		{"missing git email is a warning", mutateWork(func(w *domain.Identity) { w.Git.Email = "" }), false, "git.email", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -15,13 +15,9 @@ import (
 // Add creates an identity: dirs, config entry, optional folder binding, and
 // (interactively, or with --login) Claude + gh logins inside its sandbox.
 func (a *IdentityAction) Add(c *cli.Context) error {
-	cfg, err := a.load()
+	cfg, name, err := a.loadNamed(c, "aigate identity add NAME   (e.g. aigate identity add work)")
 	if err != nil {
 		return err
-	}
-	name := c.Args().First()
-	if name == "" {
-		return fmt.Errorf("usage: aigate identity add NAME   (e.g. aigate identity add work)")
 	}
 	if _, exists := cfg.Identities[name]; exists {
 		return fmt.Errorf("identity %q already exists. See: aigate identity show %s", name, name)
