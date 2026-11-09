@@ -4,183 +4,180 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AxeForge AiGate</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23d9531e'/%3E%3Ctext x='16' y='21.5' text-anchor='middle' font-family='Arial,sans-serif' font-size='14' font-weight='900' fill='%23fff7ef'%3EAF%3C/text%3E%3C/svg%3E">
+  <title>aigate · dashboard</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23d9531e'/%3E%3Cpath d='M9 23V12l7-4 7 4v11' fill='none' stroke='%23fff7ef' stroke-width='2.6' stroke-linejoin='round'/%3E%3Cpath d='M13 23v-6h6v6' fill='none' stroke='%23fff7ef' stroke-width='2.6'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <div class="ambient-grid" aria-hidden="true"></div>
-  <main class="shell" data-controller>
-    <header class="topbar">
-      <div class="brand-lockup" aria-label="AxeForge AiGate">
-        <span class="brand-mark">AF</span>
-        <div>
-          <p class="eyebrow">AxeForge security console</p>
-          <h1>AiGate command boundary</h1>
-        </div>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#overview" aria-label="aigate dashboard">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7"/><path d="M9 23V12l7-4 7 4v11" /><path d="M13 23v-6h6v6" /></svg>
+        <span class="brand-name">aigate</span>
+        <span class="brand-sub">Sandbox dashboard</span>
+      </a>
+      <div class="topbar-actions">
+        <span class="status {{if .Initialized}}is-ok{{else}}is-warn{{end}}" title="{{tilde .ConfigPath}}">
+          <span class="dot" aria-hidden="true"></span>{{if .Initialized}}Config loaded{{else}}Not initialized — run <code>aigate init</code>{{end}}
+        </span>
+        <span class="sync-note" data-field="sync-note" aria-live="polite">Loading…</span>
+        <button type="button" class="btn" data-action="refresh">Refresh</button>
       </div>
-      <div class="status-pill {{if .Initialized}}is-ready{{end}}">
-        <span></span>
-        {{if .Initialized}}initialized{{else}}not initialized{{end}}
-      </div>
-    </header>
+    </div>
+    <nav class="tabs" aria-label="Sections">
+      <a href="#overview">Overview</a>
+      <a href="#decisions">Decisions</a>
+      <a href="#identities">Identities</a>
+      <a href="#policy">Policy</a>
+    </nav>
+  </header>
 
-    <section class="hero-grid">
-      <article class="scoreboard">
-        <div class="score-main">
-          <p>stopped or flagged</p>
+  <main class="page">
+    <section id="overview" class="section" aria-labelledby="overview-title">
+      <h2 id="overview-title" class="visually-hidden">Overview</h2>
+      <div class="stats">
+        <article class="card stat">
+          <h3>Blocked or flagged</h3>
           <strong data-field="blocked-total">{{.Counters.BlockedTotal}}</strong>
-          <small class="score-caption">rule blocks + judge denials and questions; overrides and fallbacks are in the timeline</small>
-          <div class="scanline" aria-hidden="true"></div>
-        </div>
-        <div class="score-side">
-          <div>
-            <span>today</span>
-            <strong data-field="blocked-today">{{.Counters.BlockedToday}}</strong>
-          </div>
-          <div>
-            <span>runs observed</span>
-            <strong data-field="runs-total">{{.Counters.RunsTotal}}</strong>
-          </div>
-        </div>
-      </article>
-
-      <article class="last-block">
-        <div class="radar" aria-hidden="true"><span></span></div>
-        <p class="panel-label">last intercept</p>
-        <div data-field="latest-block">
-          {{if .LastBlocked}}
-          <strong>{{.LastBlocked.Rule}}</strong>
-          <span>{{.LastBlocked.Command}}</span>
-          <small>{{.LastBlocked.Detail}}</small>
-          {{else}}
-          <strong>quiet</strong>
-          <span>No blocked sandbox activity has been captured yet.</span>
-          <small>Run commands through aigate and this panel will fill in.</small>
-          {{end}}
-        </div>
-      </article>
-    </section>
-
-    <section class="dashboard-grid">
-      <article class="panel rule-panel">
-        <div class="panel-head">
-          <div>
-            <p class="panel-label">active policy</p>
-            <h2>Rules enforced by the operating system</h2>
-          </div>
-          <div class="sync-cluster">
-            <span class="sync-note" data-field="sync-note" aria-live="polite">synced just now</span>
-            <button type="button" data-action="refresh" aria-label="Refresh dashboard">Sync</button>
-          </div>
-        </div>
-        <div class="rule-counters">
-          <div><span>deny read</span><strong data-field="rule-read">{{len .Rules.DenyRead}}</strong></div>
-          <div><span>deny exec</span><strong data-field="rule-exec">{{len .Rules.DenyExec}}</strong></div>
-          <div><span>allow net</span><strong data-field="rule-net">{{len .Rules.AllowNet}}</strong></div>
-          <div><span>scope paths</span><strong data-field="rule-scope">{{len .Rules.AllowedPaths}}</strong></div>
-        </div>
-        <div class="rule-lists">
-          <div>
-            <h2>Protected reads</h2>
-            <ul data-list="deny-read">{{range .Rules.DenyRead}}<li>{{.}}</li>{{else}}<li class="muted">none</li>{{end}}</ul>
-          </div>
-          <div>
-            <h2>Blocked commands</h2>
-            <ul data-list="deny-exec">{{range .Rules.DenyExec}}<li>{{.}}</li>{{else}}<li class="muted">none</li>{{end}}</ul>
-          </div>
-          <div>
-            <h2>Allowed network</h2>
-            <ul data-list="allow-net">{{range .Rules.AllowNet}}<li>{{.}}</li>{{else}}<li class="muted">all outbound allowed</li>{{end}}</ul>
-          </div>
-          <div>
-            <h2>Session scope</h2>
-            <ul data-list="allowed-paths">{{range .Rules.AllowedPaths}}<li>{{.}}</li>{{else}}<li class="muted">scope off — $HOME fully accessible</li>{{end}}</ul>
-          </div>
-        </div>
-      </article>
-
-      <article class="panel breakdown-panel">
-        <p class="panel-label">block mix</p>
-        <h2>Where the sandbox is taking pressure</h2>
-        <div class="bars" data-field="bars"></div>
-        <p class="panel-label spark-label">activity — last 14 days</p>
-        <div class="spark" data-field="spark" role="img" aria-label="Daily blocked and run activity"></div>
-        <p class="path-note">audit log: <span>{{.AuditPath}}</span></p>
-      </article>
-    </section>
-
-    <section class="panel identities-panel" aria-labelledby="identities-title">
-      <div class="panel-head">
-        <div>
-          <p class="panel-label">identities</p>
-          <h2 id="identities-title">Who each session runs as</h2>
-        </div>
-        <span class="path-note">a session only sees its own identity's logins</span>
-      </div>
-      <div class="identity-grid" data-list="identities" aria-live="polite">
-        <div class="empty-state"><strong>Loading identities…</strong></div>
-      </div>
-    </section>
-
-    <section class="panel events-panel">
-      <div class="panel-head">
-        <div>
-          <p class="panel-label">timeline</p>
-          <h2>Recent decisions</h2>
-          <p class="panel-sub">Every block, judge verdict, override and fallback — and who overrode what, and why.</p>
-        </div>
-        <span class="path-note">config: {{.ConfigPath}}</span>
-      </div>
-      <div class="filters" aria-label="Timeline filters">
-        <label class="search-box">
-          <span>Search command or detail</span>
-          <input type="search" data-filter="query" placeholder="curl, .env, kubectl, registry..." autocomplete="off">
-        </label>
-        <label>
-          <span>Event</span>
-          <select data-filter="kind">
-            <option value="">All decisions</option>
-            <option value="blocked">Sandbox / rule blocks</option>
-            <option value="judge_decision">Judge verdicts</option>
-            <option value="judge_override">Overrides</option>
-            <option value="judge_fallback">Judge fallbacks</option>
-          </select>
-        </label>
-        <label>
-          <span>Layer</span>
-          <select data-filter="layer">
-            <option value="">Any layer</option>
-            <option value="sandbox">Sandbox</option>
-            <option value="rule">Rule</option>
-            <option value="identity">Identity</option>
-            <option value="judge">Judge</option>
-          </select>
-        </label>
-        <label>
-          <span>Identity</span>
-          <select data-filter="identity">
-            <option value="">Any identity</option>
-          </select>
-        </label>
-        <button type="button" data-action="clear-filters">Clear</button>
-        <output data-field="filter-count">0 shown</output>
-      </div>
-      <div class="event-list" data-list="events">
-        {{range .Events}}
-        <article class="event-row rule-{{.Rule}}">
-          <time>{{.Time.Format "Jan 02 15:04:05"}}</time>
-          <strong>{{.Kind}}</strong>
-          <span>{{.Rule}}</span>
-          <p>{{.Command}}</p>
+          <p>Rule blocks, judge denials and questions, all time</p>
         </article>
-        {{else}}
-        <div class="empty-state">
-          <strong>No audit events yet.</strong>
-          <span>`aigate run -- ...` will start populating this view.</span>
-        </div>
-        {{end}}
+        <article class="card stat">
+          <h3>Today</h3>
+          <strong data-field="blocked-today">{{.Counters.BlockedToday}}</strong>
+          <p>Blocked or flagged since midnight</p>
+        </article>
+        <article class="card stat">
+          <h3>Sessions</h3>
+          <strong data-field="runs-total">{{.Counters.RunsTotal}}</strong>
+          <p>Sandboxed sessions started</p>
+        </article>
+        <article class="card latest" aria-labelledby="latest-title">
+          <h3 id="latest-title">Latest block <span class="outcome outcome-deny" data-field="latest-badge"{{if not .LastBlocked}} hidden{{end}}>Blocked</span></h3>
+          <div data-field="latest-block">
+            {{if .LastBlocked}}
+            <code class="latest-what">{{.LastBlocked.Command}}</code>
+            <p class="latest-why">{{.LastBlocked.Rule}} · {{.LastBlocked.Detail}}</p>
+            {{else}}
+            <p class="muted">Nothing blocked yet. Blocks from <code>aigate run</code> sessions show up here.</p>
+            {{end}}
+          </div>
+        </article>
       </div>
+
+      <div class="charts">
+        <article class="card">
+          <header class="card-head">
+            <h3>Blocks by rule</h3>
+          </header>
+          <div class="bars" data-field="bars"></div>
+        </article>
+        <article class="card">
+          <header class="card-head">
+            <h3>Activity, last 14 days</h3>
+            <ul class="legend" aria-hidden="true">
+              <li><span class="swatch swatch-runs"></span>Sessions</li>
+              <li><span class="swatch swatch-blocked"></span>Blocks</li>
+            </ul>
+          </header>
+          <div class="spark" data-field="spark" role="img" aria-label="Daily sessions and blocks, last 14 days"></div>
+          <div class="spark-axis" data-field="spark-axis" aria-hidden="true"></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="decisions" class="section" aria-labelledby="decisions-title">
+      <header class="section-head">
+        <div>
+          <h2 id="decisions-title">Decisions</h2>
+          <p>Every block, judge verdict, override and fallback — newest first.</p>
+        </div>
+        <output class="count" data-field="filter-count">0 shown</output>
+      </header>
+      <div class="card">
+        <form class="filters" aria-label="Filter decisions" onsubmit="return false">
+          <label class="field field-search">
+            <span>Search</span>
+            <input type="search" data-filter="query" placeholder="Command, file, reason…" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Type</span>
+            <select data-filter="kind">
+              <option value="">All types</option>
+              <option value="blocked">Sandbox / rule blocks</option>
+              <option value="judge_decision">Judge verdicts</option>
+              <option value="judge_override">Overrides</option>
+              <option value="judge_fallback">Judge fallbacks</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Layer</span>
+            <select data-filter="layer">
+              <option value="">All layers</option>
+              <option value="sandbox">Sandbox</option>
+              <option value="rule">Rule</option>
+              <option value="identity">Identity</option>
+              <option value="judge">Judge</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Identity</span>
+            <select data-filter="identity">
+              <option value="">All identities</option>
+            </select>
+          </label>
+          <button type="button" class="btn btn-quiet" data-action="clear-filters">Clear filters</button>
+        </form>
+        <div class="decisions" data-list="events" aria-live="polite">
+          <div class="empty"><strong>Loading decisions…</strong></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="identities" class="section" aria-labelledby="identities-title">
+      <header class="section-head">
+        <div>
+          <h2 id="identities-title">Identities</h2>
+          <p>Each session sees only its own identity's logins, git author and ssh key.</p>
+        </div>
+      </header>
+      <div class="identity-grid" data-list="identities" aria-live="polite">
+        <div class="card empty"><strong>Loading identities…</strong></div>
+      </div>
+    </section>
+
+    <section id="policy" class="section" aria-labelledby="policy-title">
+      <header class="section-head">
+        <div>
+          <h2 id="policy-title">Policy</h2>
+          <p>Rules every <code>aigate run</code> session enforces. Change them with <code>aigate allow</code> / <code>aigate deny</code>.</p>
+        </div>
+      </header>
+      <div class="policy-grid">
+        <article class="card policy">
+          <h3>Hidden files <span class="badge" data-field="rule-read">{{len .Rules.DenyRead}}</span></h3>
+          <p class="policy-help">deny_read — shown as blocked inside the sandbox</p>
+          <ul data-list="deny-read">{{range .Rules.DenyRead}}<li>{{.}}</li>{{else}}<li class="muted">none</li>{{end}}</ul>
+        </article>
+        <article class="card policy">
+          <h3>Blocked commands <span class="badge" data-field="rule-exec">{{len .Rules.DenyExec}}</span></h3>
+          <p class="policy-help">deny_exec — refused before and inside the sandbox</p>
+          <ul data-list="deny-exec">{{range .Rules.DenyExec}}<li>{{.}}</li>{{else}}<li class="muted">none</li>{{end}}</ul>
+        </article>
+        <article class="card policy">
+          <h3>Allowed hosts <span class="badge" data-field="rule-net">{{len .Rules.AllowNet}}</span></h3>
+          <p class="policy-help">allow_net — every other host is unreachable</p>
+          <ul data-list="allow-net">{{range .Rules.AllowNet}}<li>{{.}}</li>{{else}}<li class="muted">any host (no allow_net)</li>{{end}}</ul>
+        </article>
+        <article class="card policy">
+          <h3>Home folders in scope <span class="badge" data-field="rule-scope">{{len .Rules.AllowedPaths}}</span></h3>
+          <p class="policy-help">allowed_paths — plus the working folder; the rest of $HOME is hidden</p>
+          <ul data-list="allowed-paths">{{range .Rules.AllowedPaths}}<li>{{.}}</li>{{else}}<li class="muted">scope off — all of $HOME is reachable</li>{{end}}</ul>
+        </article>
+      </div>
+      <dl class="paths">
+        <div><dt>Config file</dt><dd><code>{{tilde .ConfigPath}}</code></dd></div>
+        <div><dt>Audit log</dt><dd><code>{{tilde .AuditPath}}</code></dd></div>
+      </dl>
     </section>
   </main>
   <script src="/static/app.js"></script>
