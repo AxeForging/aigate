@@ -38,40 +38,12 @@ func (a *RunAction) Execute(c *cli.Context) error {
 		cmdArgs = args[1:]
 	}
 
-	// Load and merge configs
-	globalCfg, err := a.configSvc.LoadGlobal()
-	if err != nil {
-		return fmt.Errorf("%w", helpers.ErrNotInitialized)
-	}
-
 	workDir, _ := os.Getwd()
-	// A broken project config must stop the run: ignoring it would silently
-	// drop its deny rules.
-	projectCfg, err := a.configSvc.LoadProject(workDir)
+	globalCfg, profile, err := buildRunProfile(a.configSvc, workDir, c.String("identity"), c.StringSlice("allow-path"))
 	if err != nil {
 		return err
 	}
-	merged := a.configSvc.Merge(globalCfg, projectCfg)
-
-	// Session-only scope additions from --allow-path.
-	for _, p := range c.StringSlice("allow-path") {
-		if !slices.Contains(merged.AllowedPaths, p) {
-			merged.AllowedPaths = append(merged.AllowedPaths, p)
-		}
-	}
-
-	identity, err := resolveRunIdentity(globalCfg, merged, c.String("identity"), workDir)
-	if err != nil {
-		return err
-	}
-
-	profile := domain.SandboxProfile{
-		Config:   *merged,
-		WorkDir:  workDir,
-		Identity: identity,
-		// Judge provider credentials stay outside, judge on or off.
-		UnsetEnv: services.JudgeCredentialEnv(globalCfg.Judge),
-	}
+	merged, identity := &profile.Config, profile.Identity
 	judgeOff, err := judgeOffForRun(a.configSvc, c.String("judge"), &profile)
 	if err != nil {
 		return err
@@ -98,6 +70,39 @@ func (a *RunAction) Execute(c *cli.Context) error {
 	printSandboxBanner(merged, workDir)
 
 	return a.runner.Run(profile, cmd, cmdArgs)
+}
+
+// buildRunProfile resolves everything `aigate run` enforces: global +
+// project config, session --allow-path, identity and its narrowed scope.
+// `aigate explain` uses it too, so the two can't disagree.
+func buildRunProfile(configSvc *services.ConfigService, workDir, identityFlag string, allowPaths []string) (*domain.Config, domain.SandboxProfile, error) {
+	globalCfg, err := configSvc.LoadGlobal()
+	if err != nil {
+		return nil, domain.SandboxProfile{}, fmt.Errorf("%w", helpers.ErrNotInitialized)
+	}
+	// A broken project config must stop the run: ignoring it would silently
+	// drop its deny rules.
+	projectCfg, err := configSvc.LoadProject(workDir)
+	if err != nil {
+		return nil, domain.SandboxProfile{}, err
+	}
+	merged := configSvc.Merge(globalCfg, projectCfg)
+	for _, p := range allowPaths {
+		if !slices.Contains(merged.AllowedPaths, p) {
+			merged.AllowedPaths = append(merged.AllowedPaths, p)
+		}
+	}
+	identity, err := resolveRunIdentity(globalCfg, merged, identityFlag, workDir)
+	if err != nil {
+		return nil, domain.SandboxProfile{}, err
+	}
+	return globalCfg, domain.SandboxProfile{
+		Config:   *merged,
+		WorkDir:  workDir,
+		Identity: identity,
+		// Judge provider credentials stay outside, judge on or off.
+		UnsetEnv: services.JudgeCredentialEnv(globalCfg.Judge),
+	}, nil
 }
 
 // resolveRunIdentity picks the identity for this run and narrows merged's

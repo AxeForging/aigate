@@ -33,6 +33,7 @@ func main() {
 	setupAction := actions.NewSetupAction(platform, configSvc)
 	helpAIAction := actions.NewHelpAIAction()
 	doctorAction := actions.NewDoctorAction(configSvc, platform)
+	explainAction := actions.NewExplainAction(configSvc)
 	denyAction := actions.NewDenyAction(ruleSvc, configSvc, platform)
 	allowAction := actions.NewAllowAction(ruleSvc, configSvc, platform)
 	runAction := actions.NewRunAction(runnerSvc, configSvc, platform)
@@ -241,6 +242,20 @@ func main() {
 			Usage:  "Remove sandbox group, user, and all rules",
 			Flags:  []cli.Flag{forceFlag, verboseFlag},
 			Action: resetAction.Execute,
+		},
+		{
+			Name:        "explain",
+			Usage:       "Say whether a path or command would be allowed here, which layer decides, and how to change it",
+			ArgsUsage:   "PATH | -- COMMAND [ARGS…]",
+			Description: "Runs nothing. Uses exactly what `aigate run` would enforce in this folder\n(config, project .aigate.yaml, identity, judge rules). Exits 1 when blocked.\n\nExamples:\n   aigate explain ~/.ssh/id_ed25519\n   aigate explain .env\n   aigate explain -- curl https://example.com\n   aigate explain --identity personal ~/.config/gh-work/hosts.yml\n   aigate explain --judge -- rm -rf ~/      # also ask the judge models",
+			Flags: []cli.Flag{
+				identityFlag, allowPathFlag,
+				cli.BoolFlag{Name: "judge", Usage: "Also ask the judge's models (contacts the provider)"},
+				cli.BoolFlag{Name: "path", Usage: "Treat the argument as a path"},
+				cli.BoolFlag{Name: "command", Usage: "Treat the arguments as a command"},
+				cli.BoolFlag{Name: "json", Usage: "Machine-readable output"},
+			},
+			Action: explainAction.Execute,
 		},
 		{
 			Name:        "doctor",
