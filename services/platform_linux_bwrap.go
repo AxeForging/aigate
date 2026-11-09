@@ -215,6 +215,9 @@ func (p *LinuxPlatform) buildBwrapArgs(profile domain.SandboxProfile, tmpFiles *
 	*tmpFiles = append(*tmpFiles, execTmp...)
 	args = append(args, execArgs...)
 
+	// Last, so it wins over the home and allowed_paths binds above.
+	args = append(args, bwrapAgentArgs()...)
+
 	return args, nil
 }
 

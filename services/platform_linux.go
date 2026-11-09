@@ -213,6 +213,7 @@ func (p *LinuxPlatform) runUnshare(profile domain.SandboxProfile, cmd string, ar
 	sb.WriteString(buildConfigDirOverride())
 	sb.WriteString(buildMountOverrides(profile))
 	sb.WriteString(buildExecDenyOverrides(profile))
+	sb.WriteString(buildAgentOverrides())
 	sb.WriteString("exec ")
 	sb.WriteString(shellEscape(cmd, args))
 	sb.WriteString("\n")
@@ -527,6 +528,7 @@ func buildNetFilterScript(allowNetHosts, dnsServersV4, dnsServersV6 []string, ip
 	sb.WriteString(buildConfigDirOverride())
 	sb.WriteString(buildMountOverrides(profile))
 	sb.WriteString(buildExecDenyOverrides(profile))
+	sb.WriteString(buildAgentOverrides())
 
 	// Execute the target command
 	sb.WriteString("exec ")
