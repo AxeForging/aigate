@@ -156,3 +156,19 @@ func TestAPI_Overview_EmptyRuleListsAreArrays(t *testing.T) {
 		}
 	}
 }
+
+// TestDashboard_PageShowsSectionsAndHomeRelativePaths: the page renders its
+// four sections and shows config/audit paths as ~/… (short, and no user name
+// on screen when sharing it).
+func TestDashboard_PageShowsSectionsAndHomeRelativePaths(t *testing.T) {
+	srv, _ := webHome(t)
+	_, body := get(t, srv.URL+"/")
+	for _, want := range []string{`id="overview"`, `id="decisions"`, `id="identities"`, `id="policy"`, "<code>~/.aigate/config.yaml</code>", "<code>~/.aigate/audit.jsonl</code>"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page missing %s", want)
+		}
+	}
+	if home, _ := os.UserHomeDir(); strings.Contains(body, home) {
+		t.Errorf("page shows the absolute home path %s", home)
+	}
+}
