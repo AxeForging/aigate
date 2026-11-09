@@ -65,14 +65,14 @@ func TestGenerateSeatbeltProfile_IdentityRuleOrder(t *testing.T) {
 }
 
 func TestIdentityEnvCommand(t *testing.T) {
-	if got := identityEnvCommand(nil); got != nil {
+	if got := identityEnvCommand(domain.SandboxProfile{}); got != nil {
 		t.Errorf("no identity → no env wrapper, got %v", got)
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	got := identityEnvCommand(&domain.ResolvedIdentity{Name: "work", Identity: domain.Identity{
+	got := identityEnvCommand(domain.SandboxProfile{Identity: &domain.ResolvedIdentity{Name: "work", Identity: domain.Identity{
 		ClaudeDir: home + "/.claude-work", GhDir: home + "/gh",
-	}})
+	}}})
 	if got[0] != "/usr/bin/env" {
 		t.Fatalf("want /usr/bin/env wrapper, got %v", got)
 	}

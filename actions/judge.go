@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 
+	"github.com/AxeForging/aigate/domain"
 	"github.com/AxeForging/aigate/services"
 	"github.com/urfave/cli"
 )
@@ -41,6 +45,9 @@ func (a *JudgeAction) Hook(c *cli.Context) error {
 	if !ok {
 		return nil
 	}
+	if sock := os.Getenv("AIGATE_JUDGE_SOCK"); sock != "" && !c.Bool("dry-run") {
+		return a.viaBroker(sock, raw)
+	}
 	cfg, err := a.configSvc.LoadGlobal()
 	if err != nil {
 		return a.warn("aigate isn't set up (run: aigate init); judge skipped")
@@ -56,15 +63,72 @@ func (a *JudgeAction) Hook(c *cli.Context) error {
 	if !settings.Enabled {
 		return nil
 	}
-	chain := services.BuildJudgeChain(settings)
-	v := chain.Decide(context.Background(), call)
-	if v.Fallback != "" {
-		_, _ = fmt.Fprintf(a.stderr, "[aigate] judge: %s\n", v.Fallback)
+	broker := &services.JudgeBroker{Chain: services.BuildJudgeChain(settings),
+		Audit: services.NewAuditService(a.configSvc), HowToAllow: judgeHowToAllow, Warn: a.stderr}
+	a.emit(broker.Handle(raw))
+	return nil
+}
+
+// viaBroker forwards the payload to the host-side broker of `aigate run`.
+// If it can't be reached, local rules still decide (they need no
+// credentials), so a sandboxed session is never left unjudged.
+func (a *JudgeAction) viaBroker(sock string, raw []byte) error {
+	out, err := services.AskJudgeBroker(sock, raw)
+	if err == nil {
+		a.emit(out)
+		return nil
 	}
-	if out := services.HookOutput(call, v, judgeHowToAllow); out != nil {
+	_, _ = fmt.Fprintf(a.stderr, "[aigate] judge: broker unreachable (%v); used local rules\n", err)
+	var in services.HookInput
+	if json.Unmarshal(raw, &in) != nil {
+		return nil
+	}
+	call, ok := services.CallFromHook(in)
+	if !ok {
+		return nil
+	}
+	v, _ := services.RulesJudge{}.Judge(context.Background(), call)
+	a.emit(services.HookOutput(call, v, judgeHowToAllow))
+	return nil
+}
+
+func (a *JudgeAction) emit(out []byte) {
+	if len(out) > 0 {
 		_, _ = a.stdout.Write(append(out, '\n'))
 	}
-	return nil
+}
+
+// startJudgeBroker serves the judge for a sandboxed session when it is
+// enabled. It never fails the run over judge problems: those are warnings.
+func startJudgeBroker(configSvc *services.ConfigService, global *domain.Config, profile *domain.SandboxProfile) (stop func(), err error) {
+	noop := func() {}
+	settings, err := services.ResolveJudgeSettings(global.Judge)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[aigate] judge: off — %v\n", err)
+		return noop, nil
+	}
+	if !settings.Enabled || slices.Equal(settings.Chain, []string{services.JudgeOff}) {
+		return noop, nil
+	}
+	dir, err := os.MkdirTemp("", "aigate-judge-")
+	if err != nil {
+		return noop, fmt.Errorf("judge: %w", err)
+	}
+	sock := filepath.Join(dir, "judge.sock")
+	broker := &services.JudgeBroker{Chain: services.BuildJudgeChain(settings),
+		Audit: services.NewAuditService(configSvc), Profile: *profile, HowToAllow: judgeHowToAllow,
+		Warn: os.Stderr, WarnOnce: true}
+	stopServe, err := services.ServeJudgeBroker(sock, broker)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return noop, err
+	}
+	profile.JudgeSocket = sock
+	fmt.Fprintf(os.Stderr, "[aigate] judge: on (%s)\n", strings.Join(settings.Chain, " → "))
+	return func() {
+		stopServe()
+		_ = os.RemoveAll(dir)
+	}, nil
 }
 
 // dryRun prints exactly what a model judge would receive, plus the local

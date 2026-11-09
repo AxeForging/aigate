@@ -89,3 +89,17 @@ func usesDefaultClaudeDir(id *domain.ResolvedIdentity) bool {
 	dir, _ := defaultClaudePaths()
 	return dir != "" && filepath.Clean(id.ClaudeDir) == dir
 }
+
+// JudgeSocketInSandbox is where bwrap binds the judge broker socket.
+const JudgeSocketInSandbox = "/tmp/.aigate-judge.sock"
+
+// sessionEnv adds what every sandboxed session needs beyond its identity:
+// the judge broker address (as seen inside) and extra variables to remove.
+func sessionEnv(profile domain.SandboxProfile, sockInside string) (set []EnvVar, unset []string) {
+	set, unset = identityEnv(profile.Identity)
+	if profile.JudgeSocket != "" {
+		set = append(set, EnvVar{"AIGATE_JUDGE_SOCK", sockInside})
+	}
+	unset = append(unset, profile.UnsetEnv...)
+	return set, unset
+}
