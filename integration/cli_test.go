@@ -8,8 +8,13 @@ import (
 	"testing"
 )
 
+// buildBinary builds aigate from this repo. AIGATE_TEST_BIN points at a
+// prebuilt binary instead (used by scripts/test-vm.sh, where VMs have no Go).
 func buildBinary(t *testing.T) string {
 	t.Helper()
+	if prebuilt := os.Getenv("AIGATE_TEST_BIN"); prebuilt != "" {
+		return prebuilt
+	}
 	bin := filepath.Join(t.TempDir(), "aigate-test")
 	cmd := exec.Command("go", "build", "-o", bin, ".")
 	cmd.Dir = repoRoot(t)

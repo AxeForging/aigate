@@ -1,4 +1,4 @@
-.PHONY: all build build-all build-local clean test lint tidy version tag release-check
+.PHONY: all build build-all build-local clean test lint tidy version tag release-check test-vm
 
 GOOS_ARCH := linux/amd64 linux/arm64 linux/386 linux/arm darwin/amd64 darwin/arm64 windows/amd64 windows/arm64 windows/386
 DIST_DIR := dist
@@ -44,6 +44,10 @@ test:
 	@echo "Running tests..."
 	go test ./... -v
 	@echo "All tests passed."
+
+# Run the suite in a throwaway VM: make test-vm DISTRO=ubuntu-24.04 (or DISTRO=all)
+test-vm:
+	scripts/test-vm.sh $(or $(DISTRO),all)
 
 lint:
 	@echo "Running linter..."
