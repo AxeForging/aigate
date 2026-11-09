@@ -70,6 +70,10 @@ func rejectProjectIdentityKeys(path string) error {
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("failed to parse config %s: %w", path, err)
 	}
+	if _, ok := raw["judge"]; ok {
+		return fmt.Errorf("%s sets \"judge\", but judge settings live only in ~/.aigate/config.yaml (a cloned repo must not be able to turn it off). "+
+			"Remove it from the project config", path)
+	}
 	for _, key := range projectIdentityKeys {
 		if _, ok := raw[key]; ok {
 			return fmt.Errorf("%s sets %q, but a project config can't choose your identity (a cloned repo could pick your work logins). "+

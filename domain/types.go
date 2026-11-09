@@ -59,6 +59,39 @@ type Config struct {
 	DefaultIdentity  string              `yaml:"default_identity,omitempty"`
 	Identities       map[string]Identity `yaml:"identities,omitempty"`
 	IdentityBindings map[string]string   `yaml:"identity_bindings,omitempty"`
+
+	// Judge is an optional decision gate on agent tool calls. Global config
+	// only: a project config must not be able to switch it off.
+	Judge JudgeConfig `yaml:"judge,omitempty"`
+}
+
+// JudgeConfig configures the optional decision gate. It can only block or
+// ask, never allow anything the sandbox would not.
+type JudgeConfig struct {
+	Enabled       bool           `yaml:"enabled"`
+	Chain         []string       `yaml:"chain,omitempty"`
+	EscalateBelow float64        `yaml:"escalate_below,omitempty"`
+	DenyAbove     float64        `yaml:"deny_above,omitempty"`
+	AskAbove      float64        `yaml:"ask_above,omitempty"`
+	Timeout       string         `yaml:"timeout,omitempty"`
+	ExcerptBytes  int            `yaml:"excerpt_bytes,omitempty"`
+	Providers     JudgeProviders `yaml:"providers,omitempty"`
+}
+
+// JudgeProviders names the env vars holding provider credentials; values
+// are never stored in config.
+type JudgeProviders struct {
+	Cloudflare CloudflareProvider `yaml:"cloudflare,omitempty"`
+	Jev        JevProvider        `yaml:"jev,omitempty"`
+}
+
+type CloudflareProvider struct {
+	AccountEnv string `yaml:"account_env,omitempty"`
+	TokenEnv   string `yaml:"token_env,omitempty"`
+}
+
+type JevProvider struct {
+	TokenEnv string `yaml:"token_env,omitempty"`
 }
 
 // GitAuthor is the commit author/committer used inside an identity's sandbox.
