@@ -14,7 +14,9 @@ import (
 // Stub CLIs stand in for the real claude/gh: they record which config dir
 // they were given and whether another identity's files were visible.
 const stubClaude = `#!/bin/sh
-{ echo "dir=$CLAUDE_CONFIG_DIR args=$*"; cat "$HOME/.claude-other/creds" 2>/dev/null; } > "$CLAUDE_CONFIG_DIR/stub-login"
+# Like Claude Code: no CLAUDE_CONFIG_DIR means ~/.claude.
+cfg=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+{ echo "dir=$cfg env=${CLAUDE_CONFIG_DIR:-unset} args=$*"; cat "$HOME/.claude-other/creds" 2>/dev/null; } > "$cfg/stub-login"
 `
 const stubGh = `#!/bin/sh
 { echo "dir=$GH_CONFIG_DIR args=$*"; cat "$HOME/.claude-other/creds" 2>/dev/null; } > "$GH_CONFIG_DIR/stub-login"
@@ -97,7 +99,7 @@ func TestIdentityAdd_LoginsRunInsideIdentitySandbox(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping sandbox integration test in short mode")
 	}
-	skipWithoutBwrap(t)
+	skipWithoutSandbox(t)
 	bin := buildBinary(t)
 	home, env := addHome(t, true)
 
@@ -107,7 +109,7 @@ func TestIdentityAdd_LoginsRunInsideIdentitySandbox(t *testing.T) {
 	}
 	claude := readFile(t, filepath.Join(home, ".claude-work/stub-login"))
 	gh := readFile(t, filepath.Join(home, ".config/gh-work/stub-login"))
-	if !strings.Contains(claude, "dir="+filepath.Join(home, ".claude-work")) {
+	if !strings.Contains(claude, "dir="+filepath.Join(home, ".claude-work")+" env="+filepath.Join(home, ".claude-work")) {
 		t.Errorf("claude login should get the identity's CLAUDE_CONFIG_DIR, got %q\n%s", claude, out)
 	}
 	if !strings.Contains(gh, "dir="+filepath.Join(home, ".config/gh-work")+" args=auth login") {
@@ -145,7 +147,7 @@ func TestIdentityAdd_InteractiveAdoptsExistingLogins(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping sandbox integration test in short mode")
 	}
-	skipWithoutBwrap(t)
+	skipWithoutSandbox(t)
 	bin := buildBinary(t)
 	home, env := addHome(t, false)
 	for _, d := range []string{".claude", ".config/gh", ".ssh"} {
@@ -205,7 +207,9 @@ func TestIdentityAdd_InteractiveAdoptsExistingLogins(t *testing.T) {
 	if readFile(t, filepath.Join(home, ".claude/existing")) != "mine" {
 		t.Error("adopting existing logins must not touch them")
 	}
-	mustContain(t, readFile(t, filepath.Join(home, ".claude/stub-login")), "dir="+filepath.Join(home, ".claude"))
+	// Adopted default dir: CLAUDE_CONFIG_DIR stays unset, so Claude uses the
+	// same settings file and macOS Keychain item as before.
+	mustContain(t, readFile(t, filepath.Join(home, ".claude/stub-login")), "dir="+filepath.Join(home, ".claude")+" env=unset")
 	if _, err := os.Stat(filepath.Join(home, ".config/gh/stub-login")); err == nil {
 		t.Error("declined gh login must not run")
 	}

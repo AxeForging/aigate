@@ -332,4 +332,10 @@ func runDarwinChecks(report *doctorReport) {
 	fmt.Println("  deny_exec      Seatbelt process-exec deny       kernel-enforced")
 	fmt.Println("  allowed_paths  Seatbelt read+write deny on $HOME with scope allows")
 	fmt.Println("  allow_net      Seatbelt network-outbound rules  kernel-enforced")
+	fmt.Println()
+	fmt.Println("Identities on macOS:")
+	fmt.Println("  isolated       files, gh login, git author, ssh key (Seatbelt hides other identities)")
+	fmt.Println("  NOT isolated   Claude logins: Claude Code keeps one Keychain item per identity, but")
+	fmt.Println("                 the Keychain doesn't stop a sandboxed process from asking for another")
+	fmt.Println("                 identity's item. Use separate macOS users if that matters to you.")
 }

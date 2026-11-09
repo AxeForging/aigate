@@ -192,7 +192,7 @@ func (s *IdentityService) EffectiveAllowedPaths(cfg *domain.Config, id *domain.R
 	if err != nil {
 		return nil, err
 	}
-	paths := []string{id.ClaudeDir, id.GhDir}
+	paths := identityOwnPaths(id)
 	add := func(p string) {
 		if p = filepath.Clean(p); !containsPath(paths, p) {
 			paths = append(paths, p)
@@ -215,7 +215,7 @@ func (s *IdentityService) EffectiveAllowedPaths(cfg *domain.Config, id *domain.R
 		if err != nil {
 			return nil, err
 		}
-		for _, protected := range []string{o.ClaudeDir, o.GhDir, o.SSHKey} {
+		for _, protected := range append(identityOwnPaths(o), o.SSHKey) {
 			if protected == "" {
 				continue
 			}
@@ -278,4 +278,15 @@ func containsPath(list []string, p string) bool {
 		}
 	}
 	return false
+}
+
+// identityOwnPaths are the dirs (and, for the default Claude dir, the
+// ~/.claude.json settings file) that belong to one identity only.
+func identityOwnPaths(id *domain.ResolvedIdentity) []string {
+	paths := []string{id.ClaudeDir, id.GhDir}
+	if usesDefaultClaudeDir(id) {
+		_, settings := defaultClaudePaths()
+		paths = append(paths, settings)
+	}
+	return paths
 }

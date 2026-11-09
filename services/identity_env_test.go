@@ -78,3 +78,21 @@ func TestSingleQuote(t *testing.T) {
 		}
 	}
 }
+
+func TestIdentityEnv_DefaultClaudeDirLeavesConfigDirUnset(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	set, unset := identityEnv(&domain.ResolvedIdentity{Name: "personal", Identity: domain.Identity{
+		ClaudeDir: home + "/.claude", GhDir: home + "/.config/gh",
+	}})
+	if _, ok := envMap(set)["CLAUDE_CONFIG_DIR"]; ok {
+		t.Error("default ~/.claude must not set CLAUDE_CONFIG_DIR (changes settings file + Keychain item)")
+	}
+	found := false
+	for _, v := range unset {
+		found = found || v == "CLAUDE_CONFIG_DIR"
+	}
+	if !found {
+		t.Error("an inherited CLAUDE_CONFIG_DIR must be unset for the default-dir identity")
+	}
+}

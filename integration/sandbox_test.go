@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,19 @@ func skipWithoutBwrap(t *testing.T) {
 	if _, err := exec.LookPath("bwrap"); err != nil {
 		t.Skip("bwrap not found, skipping sandbox test")
 	}
+}
+
+// skipWithoutSandbox skips unless this OS's sandbox tool exists (bwrap on
+// Linux, sandbox-exec on macOS).
+func skipWithoutSandbox(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "darwin" {
+		if _, err := exec.LookPath("sandbox-exec"); err != nil {
+			t.Skip("sandbox-exec not found")
+		}
+		return
+	}
+	skipWithoutBwrap(t)
 }
 
 // sandboxEnv returns a tmpHome with a minimal aigate config and the env slice to use.

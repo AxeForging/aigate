@@ -318,3 +318,21 @@ func containsString(list []string, s string) bool {
 	}
 	return false
 }
+
+func TestEffectiveAllowedPaths_DefaultClaudeDirOwnsSettingsFile(t *testing.T) {
+	home, cfg := identityHome(t)
+	svc := NewIdentityService()
+	personal, _ := svc.Resolve(cfg, "personal", home)
+	got, err := svc.EffectiveAllowedPaths(cfg, personal, home)
+	if err != nil || !containsString(got, home+"/.claude.json") {
+		t.Fatalf("default-dir identity should get ~/.claude.json, got %v err=%v", got, err)
+	}
+
+	w := cfg.Identities["work"]
+	w.AllowedPaths = []string{"~/.claude.json"}
+	cfg.Identities["work"] = w
+	work, _ := svc.Resolve(cfg, "work", home)
+	if _, err := svc.EffectiveAllowedPaths(cfg, work, home); err == nil || !strings.Contains(err.Error(), `"personal"`) {
+		t.Errorf("another identity listing ~/.claude.json must be refused, got %v", err)
+	}
+}
