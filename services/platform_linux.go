@@ -179,6 +179,10 @@ func (p *LinuxPlatform) ListACLs(workDir string) ([]string, error) {
 }
 
 func (p *LinuxPlatform) RunSandboxed(profile domain.SandboxProfile, cmd string, args []string, stdout, stderr io.Writer) error {
+	// Explain an AppArmor block up front instead of a cryptic bwrap error.
+	if problem := DetectUsernsProblem(); problem != nil {
+		return problem
+	}
 	if len(profile.Config.AllowNet) > 0 {
 		if hasSlirp4netns() {
 			if hasBwrap() {
