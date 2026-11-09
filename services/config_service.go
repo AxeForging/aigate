@@ -213,6 +213,13 @@ func (s *ConfigService) InitDefaultConfig() *domain.Config {
 				"aws_secret",
 				"github",
 				"bearer",
+				"cloudflare",
+				"gitlab",
+				"slack",
+				"stripe",
+				"google",
+				"npm",
+				"huggingface",
 			},
 			Patterns: []domain.MaskPattern{
 				{
