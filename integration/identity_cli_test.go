@@ -204,3 +204,15 @@ func TestIdentityCLI_WhoamiFlagAndNotInitialized(t *testing.T) {
 		t.Errorf("uninitialized whoami should point to init: %v\n%s", err, out)
 	}
 }
+
+// TestHelp_DocumentsIdentityCommands keeps help text in step with the commands.
+func TestHelp_DocumentsIdentityCommands(t *testing.T) {
+	bin := buildBinary(t)
+	home := t.TempDir()
+	out, _ := aigateIn(t, bin, home, home, "help-ai")
+	mustContain(t, out, "aigate identity add work", "aigate identity use none", "aigate whoami", "aigate run --identity personal -- claude")
+	out, _ = aigateIn(t, bin, home, home, "identity", "--help")
+	mustContain(t, out, "add", "use", "list", "show", "remove")
+	out, _ = aigateIn(t, bin, home, home, "run", "--help")
+	mustContain(t, out, "--identity", "aigate run --identity work -- claude")
+}
