@@ -196,6 +196,9 @@ func (p *LinuxPlatform) RunSandboxed(profile domain.SandboxProfile, cmd string, 
 
 // runUnshare runs a command in a user/mount/pid namespace without network filtering.
 func (p *LinuxPlatform) runUnshare(profile domain.SandboxProfile, cmd string, args []string, stdout, stderr io.Writer) error {
+	if err := checkFallbackIdentity(profile); err != nil {
+		return err
+	}
 	unshareArgs := []string{
 		"--mount",         // Mount namespace
 		"--pid",           // PID namespace
@@ -213,6 +216,7 @@ func (p *LinuxPlatform) runUnshare(profile domain.SandboxProfile, cmd string, ar
 	sb.WriteString(buildConfigDirOverride())
 	sb.WriteString(buildMountOverrides(profile))
 	sb.WriteString(buildExecDenyOverrides(profile))
+	sb.WriteString(buildIdentityOverrides(profile))
 	sb.WriteString(buildAgentOverrides())
 	sb.WriteString("exec ")
 	sb.WriteString(shellEscape(cmd, args))
@@ -358,6 +362,9 @@ func splitDNSByFamily(servers []string) (v4, v6 []string) {
 // setns(CLONE_NEWNET). Launching it from the host fails with EPERM because an
 // unprivileged process lacks CAP_SYS_ADMIN in its own (init) user namespace.
 func (p *LinuxPlatform) runWithNetFilter(profile domain.SandboxProfile, cmd string, args []string, stdout, stderr io.Writer) error {
+	if err := checkFallbackIdentity(profile); err != nil {
+		return err
+	}
 	dnsV4, dnsV6 := splitDNSByFamily(getSystemDNS())
 	ipv6Enabled := ipv6SandboxSupported()
 	if !ipv6Enabled {
@@ -528,6 +535,7 @@ func buildNetFilterScript(allowNetHosts, dnsServersV4, dnsServersV6 []string, ip
 	sb.WriteString(buildConfigDirOverride())
 	sb.WriteString(buildMountOverrides(profile))
 	sb.WriteString(buildExecDenyOverrides(profile))
+	sb.WriteString(buildIdentityOverrides(profile))
 	sb.WriteString(buildAgentOverrides())
 
 	// Execute the target command
