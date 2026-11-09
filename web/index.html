@@ -234,6 +234,7 @@
       <nav class="topbar-nav">
         <a class="navlink" href="#isolation">Isolation</a>
         <a class="navlink" href="#platforms">Platforms</a>
+<a class="navlink" href="#identities">Identities</a>
         <a class="navlink" href="#usecases">Use cases</a>
         <a class="axe-button" href="https://github.com/AxeForging/aigate">View on GitHub</a>
       </nav>
@@ -366,6 +367,42 @@
     </div>
   </section>
 
+  <section id="identities">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="kicker-sm">Identities</div>
+        <h2 class="section-title">Work, personal, clients: one machine, logins that can't see each other</h2>
+        <p class="section-sub">Each identity has its own Claude Code login, GitHub CLI login, git author and ssh key. A session only gets its own; the kernel hides the rest.</p>
+      </div>
+      <div class="feature-grid">
+        <div class="glass-card feature-card">
+          <div class="tone-row"><span class="feed-tone feed-tone-info"></span><h3>One command to set up</h3></div>
+          <p><code>aigate identity add work</code> asks for folders, git author and ssh key, then logs in to Claude and <code>gh</code> inside that identity's sandbox. Your first identity can adopt your current <code>~/.claude</code> without moving anything.</p>
+        </div>
+        <div class="glass-card feature-card">
+          <div class="tone-row"><span class="feed-tone feed-tone-warn"></span><h3>Picked by folder</h3></div>
+          <p><code>aigate identity use work</code> binds a folder. Every run says which identity is active and why; <code>aigate whoami</code> answers it without running anything.</p>
+        </div>
+        <div class="glass-card feature-card">
+          <div class="tone-row"><span class="feed-tone feed-tone-critical"></span><h3>Isolated, not just switched</h3></div>
+          <p>Other identities' folders are hidden, host tokens like <code>GH_TOKEN</code> are removed, and git over ssh uses only the identity's key, never an agent. A cloned repo's <code>.aigate.yaml</code> can't pick an identity.</p>
+        </div>
+      </div>
+      <div class="table-scroll" style="margin-top: 1rem;">
+      <table>
+        <tr><th>What a session can reach</th><th>Linux</th><th>macOS</th></tr>
+        <tr><td>Other identities' files, <code>gh</code> login, ssh keys</td><td>Hidden (bwrap)</td><td>Hidden (Seatbelt)</td></tr>
+        <tr><td>Git author / committer</td><td>Per identity</td><td>Per identity</td></tr>
+        <tr><td>Other identities' Claude login</td><td>Hidden</td><td>Separate Keychain item, not access-isolated (<code>aigate doctor</code> explains)</td></tr>
+      </table>
+      </div>
+      <pre class="terminal-window" style="padding: 0.6rem 0.9rem; margin-top: 1rem; overflow-x: auto;"><code style="background: none; padding: 0;">$ aigate identity add work
+$ cd ~/work &amp;&amp; aigate identity use work
+$ aigate run -- claude
+[aigate] identity: work (folder ~/work)</code></pre>
+    </div>
+  </section>
+
   <section id="commands">
     <div class="wrap">
       <div class="section-head">
@@ -416,7 +453,7 @@
         </div>
         <div class="glass-card usecase-card">
           <h3>Stop credential exfiltration</h3>
-          <p>Deny read on <code>.env</code>, <code>secrets/</code>, and SSH keys, then mask API keys and tokens that still make it into stdout.</p>
+          <p>Deny read on <code>.env</code>, <code>secrets/</code>, and SSH keys, then mask API keys and tokens (Anthropic, OpenAI, GitHub, Cloudflare, Stripe, Slack and more) that still make it into stdout.</p>
           <code>aigate deny read .env secrets/ *.pem</code>
         </div>
         <div class="glass-card usecase-card">
@@ -635,6 +672,7 @@ sudo mv aigate-linux-amd64 /usr/local/bin/aigate</code></pre>
 
   revealSection(document.getElementById("isolation"), ".feature-card");
   revealSection(document.getElementById("platforms"), ".table-scroll");
+  revealSection(document.getElementById("identities"), ".feature-card");
   revealSection(document.getElementById("commands"), ".guide-step");
   revealSection(document.getElementById("usecases"), ".usecase-card");
   revealSection(document.getElementById("install"), ".install-step");
