@@ -45,7 +45,12 @@ func (a *RunAction) Execute(c *cli.Context) error {
 	}
 
 	workDir, _ := os.Getwd()
-	projectCfg, _ := a.configSvc.LoadProject(workDir)
+	// A broken project config must stop the run: ignoring it would silently
+	// drop its deny rules.
+	projectCfg, err := a.configSvc.LoadProject(workDir)
+	if err != nil {
+		return err
+	}
 	merged := a.configSvc.Merge(globalCfg, projectCfg)
 
 	// Session-only scope additions from --allow-path.
@@ -55,9 +60,15 @@ func (a *RunAction) Execute(c *cli.Context) error {
 		}
 	}
 
+	identity, err := a.resolveIdentity(globalCfg, merged, c.String("identity"), workDir)
+	if err != nil {
+		return err
+	}
+
 	profile := domain.SandboxProfile{
-		Config:  *merged,
-		WorkDir: workDir,
+		Config:   *merged,
+		WorkDir:  workDir,
+		Identity: identity,
 	}
 
 	helpers.Log.Debug().
@@ -70,9 +81,59 @@ func (a *RunAction) Execute(c *cli.Context) error {
 		Int("allowed_paths", len(merged.AllowedPaths)).
 		Msg("Running sandboxed command")
 
+	printIdentityBanner(globalCfg, identity)
 	printSandboxBanner(merged, workDir)
 
 	return a.runner.Run(profile, cmd, cmdArgs)
+}
+
+// resolveIdentity picks the identity for this run and narrows merged's
+// allowed_paths to it. Fatal problems with the chosen identity (or ones that
+// concern several identities) stop the run; others are printed as warnings.
+func (a *RunAction) resolveIdentity(global, merged *domain.Config, flag, workDir string) (*domain.ResolvedIdentity, error) {
+	svc := services.NewIdentityService()
+	id, err := svc.Resolve(global, flag, workDir)
+	if err != nil {
+		return nil, err
+	}
+	if id == nil {
+		return nil, nil
+	}
+
+	var fatal []string
+	for _, p := range svc.Validate(global) {
+		relevant := p.Identity == "" || p.Identity == id.Name
+		line := p.Message
+		if p.Fix != "" {
+			line += ". Fix: " + p.Fix
+		}
+		if p.Fatal && relevant {
+			fatal = append(fatal, line)
+		} else if relevant {
+			fmt.Fprintln(os.Stderr, "[aigate] warning: "+line)
+		}
+	}
+	if len(fatal) > 0 {
+		return nil, fmt.Errorf("can't run as identity %q:\n  %s", id.Name, strings.Join(fatal, "\n  "))
+	}
+
+	allowed, err := svc.EffectiveAllowedPaths(merged, id, workDir)
+	if err != nil {
+		return nil, err
+	}
+	merged.AllowedPaths = allowed
+	return id, nil
+}
+
+// printIdentityBanner says which identity is active and why, so users never
+// have to guess whose logins a session can see.
+func printIdentityBanner(global *domain.Config, id *domain.ResolvedIdentity) {
+	switch {
+	case id != nil:
+		fmt.Fprintf(os.Stderr, "[aigate] identity: %s (%s)\n", id.Name, id.Reason)
+	case len(global.Identities) > 0:
+		fmt.Fprintln(os.Stderr, "[aigate] identity: none (pick one with --identity NAME, or bind this folder: aigate identity use NAME)")
+	}
 }
 
 // printSandboxBanner prints active restrictions to stderr so AI agents
