@@ -20,10 +20,11 @@ const noneIdentity = "none"
 type IdentityAction struct {
 	configSvc *services.ConfigService
 	idSvc     *services.IdentityService
+	runner    *services.RunnerService // runs logins inside the identity's sandbox
 }
 
-func NewIdentityAction(c *services.ConfigService) *IdentityAction {
-	return &IdentityAction{configSvc: c, idSvc: services.NewIdentityService()}
+func NewIdentityAction(c *services.ConfigService, r *services.RunnerService) *IdentityAction {
+	return &IdentityAction{configSvc: c, idSvc: services.NewIdentityService(), runner: r}
 }
 
 func (a *IdentityAction) load() (*domain.Config, error) {

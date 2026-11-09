@@ -38,7 +38,7 @@ func main() {
 	runAction := actions.NewRunAction(runnerSvc, configSvc, platform)
 	statusAction := actions.NewStatusAction(configSvc, platform)
 	resetAction := actions.NewResetAction(platform, configSvc)
-	identityAction := actions.NewIdentityAction(configSvc)
+	identityAction := actions.NewIdentityAction(configSvc, runnerSvc)
 	whoamiAction := actions.NewWhoamiAction(configSvc)
 
 	app := cli.NewApp()
@@ -130,6 +130,24 @@ func main() {
 			Usage:       "Manage identities (separate Claude/gh/git/ssh logins per account)",
 			Description: "Each identity only sees its own logins inside the sandbox.\n\nExamples:\n   aigate identity list\n   aigate identity use work        # this folder (and inside it) runs as work\n   aigate identity use none        # unbind this folder\n   aigate identity show work",
 			Subcommands: []cli.Command{
+				{
+					Name:        "add",
+					Usage:       "Create an identity (asks a few questions, then logs in to Claude and gh)",
+					ArgsUsage:   "NAME",
+					Description: "Examples:\n   aigate identity add work\n   aigate identity add work --use            # also bind the current folder\n   aigate identity add ci --yes --git-email ci@example.com   # no questions",
+					Flags: []cli.Flag{
+						cli.StringFlag{Name: "claude-dir", Usage: "Claude folder (default ~/.claude-NAME)"},
+						cli.StringFlag{Name: "gh-dir", Usage: "GitHub CLI folder (default ~/.config/gh-NAME)"},
+						cli.StringFlag{Name: "git-name", Usage: "Git author name (default: your global git config)"},
+						cli.StringFlag{Name: "git-email", Usage: "Git author email (default: your global git config)"},
+						cli.StringFlag{Name: "ssh-key", Usage: "Private key used for git over ssh (mounted read-only)"},
+						cli.BoolFlag{Name: "default", Usage: "Make it the default identity (automatic for the first one)"},
+						cli.BoolFlag{Name: "use", Usage: "Bind the current folder to it"},
+						cli.BoolFlag{Name: "login", Usage: "Run the Claude and gh logins even without a terminal"},
+						cli.BoolFlag{Name: "yes, y", Usage: "No questions: take defaults and skip logins (unless --login)"},
+					},
+					Action: identityAction.Add,
+				},
 				{
 					Name:    "list",
 					Aliases: []string{"ls"},
