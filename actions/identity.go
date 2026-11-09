@@ -35,6 +35,20 @@ func (a *IdentityAction) load() (*domain.Config, error) {
 	return cfg, nil
 }
 
+// loadNamed loads the config and the NAME argument; a missing NAME returns
+// the command's usage line.
+func (a *IdentityAction) loadNamed(c *cli.Context, usage string) (*domain.Config, string, error) {
+	cfg, err := a.load()
+	if err != nil {
+		return nil, "", err
+	}
+	name := c.Args().First()
+	if name == "" {
+		return nil, "", fmt.Errorf("usage: %s", usage)
+	}
+	return cfg, name, nil
+}
+
 // List prints every identity; "*" marks the one active in this folder.
 func (a *IdentityAction) List(c *cli.Context) error {
 	cfg, err := a.load()
@@ -72,13 +86,9 @@ func (a *IdentityAction) List(c *cli.Context) error {
 
 // Show prints one identity, what a session under it can see, and problems.
 func (a *IdentityAction) Show(c *cli.Context) error {
-	cfg, err := a.load()
+	cfg, name, err := a.loadNamed(c, "aigate identity show NAME (see: aigate identity list)")
 	if err != nil {
 		return err
-	}
-	name := c.Args().First()
-	if name == "" {
-		return fmt.Errorf("usage: aigate identity show NAME (see: aigate identity list)")
 	}
 	id, err := a.idSvc.Resolve(cfg, name, "")
 	if err != nil {
@@ -91,13 +101,9 @@ func (a *IdentityAction) Show(c *cli.Context) error {
 
 // Use binds a folder (default: current) to an identity; "none" unbinds it.
 func (a *IdentityAction) Use(c *cli.Context) error {
-	cfg, err := a.load()
+	cfg, name, err := a.loadNamed(c, `aigate identity use NAME [FOLDER]  (NAME "none" unbinds the folder)`)
 	if err != nil {
 		return err
-	}
-	name := c.Args().First()
-	if name == "" {
-		return fmt.Errorf("usage: aigate identity use NAME [FOLDER]  (NAME \"none\" unbinds the folder)")
 	}
 	dir := c.Args().Get(1)
 	if dir == "" {

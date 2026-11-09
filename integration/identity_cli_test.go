@@ -26,14 +26,8 @@ identities:
 func cliHome(t *testing.T, config string) string {
 	t.Helper()
 	home := t.TempDir()
-	for _, d := range []string{".aigate", ".claude-work", ".config/gh-work", ".claude", ".config/gh", "work/api", "oss"} {
-		if err := os.MkdirAll(filepath.Join(home, d), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(home, ".aigate", "config.yaml"), []byte(config), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	mkdirs(t, home, ".claude-work", ".config/gh-work", ".claude", ".config/gh", "work/api", "oss")
+	writeTree(t, home, 0o644, map[string]string{".aigate/config.yaml": config})
 	return home
 }
 
