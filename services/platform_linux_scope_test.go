@@ -237,7 +237,7 @@ func TestBuildNetFilterScript_IncludesScopeOverrides(t *testing.T) {
 	profile, tmpHome := scopeProfile(t, []string{"~/.cache"})
 	profile.Config.AllowNet = []string{"api.anthropic.com"}
 
-	script := buildNetFilterScript(profile.Config.AllowNet, []string{"1.1.1.1"}, nil, false, profile, testStage, "echo", []string{"hi"})
+	script := buildNetFilterScript(profile.Config.AllowNet, false, profile, testStage, "echo", []string{"hi"})
 	if !strings.Contains(script, "mount -t tmpfs tmpfs \""+tmpHome+"\"") {
 		t.Errorf("net-filter script should include the scope hide for home, got:\n%s", script)
 	}

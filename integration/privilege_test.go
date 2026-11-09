@@ -43,6 +43,9 @@ func modeEnv(t *testing.T, m sandboxMode) (env []string, work string) {
 			t.Skipf("%s not found", tool)
 		}
 	}
+	if m.noBwrap && exec.Command("unshare", "--user", "--map-root-user", "true").Run() != nil {
+		t.Skip("plain unshare can't create user namespaces here (e.g. Ubuntu's AppArmor allows only bwrap)")
+	}
 	if m.allowNet {
 		if _, err := exec.LookPath("slirp4netns"); err != nil {
 			t.Skip("slirp4netns not found, network-filter path unavailable")
@@ -269,6 +272,61 @@ func TestRun_PortPublishedToHost(t *testing.T) {
 		}
 		if !strings.Contains(body, "SERVED_FROM_SANDBOX") {
 			t.Errorf("server inside the sandbox not reachable at localhost:%d (body %q)\n%s", port, body, out.String())
+		}
+	})
+}
+
+// TestEscape_AllowNetBlocksOtherHosts: with allow_net set, a host that isn't
+// listed is unreachable — by IP too, so DNS isn't what stops it. (Without a
+// working firewall this connects whenever the machine is online.)
+func TestEscape_AllowNetBlocksOtherHosts(t *testing.T) {
+	forEachMode(t, func(t *testing.T, bin string, env []string, work string) {
+		if !strings.HasSuffix(t.Name(), "allow_net") {
+			t.Skip("no allow_net in this mode")
+		}
+		probe := `import socket
+for ip in ["1.1.1.1", "8.8.8.8"]:
+    s = socket.socket()
+    s.settimeout(3)
+    try:
+        s.connect((ip, 443)); print("CONNECTED " + ip)
+    except OSError:
+        pass
+print("MARKER_DONE")`
+		out, _ := runSandboxedCmd(t, bin, env, work, "python3", "-I", "-c", probe)
+		if !strings.Contains(out, "MARKER_DONE") {
+			t.Fatalf("sandbox did not run: %s", out)
+		}
+		if strings.Contains(out, "CONNECTED") {
+			t.Errorf("a host outside allow_net was reachable:\n%s", out)
+		}
+		if strings.Contains(out, "iptables") || strings.Contains(out, "Permission denied") {
+			t.Errorf("firewall setup reported errors:\n%s", out)
+		}
+	})
+}
+
+// TestEscape_AllowNetFailsClosedWithoutFirewall: if the firewall can't be
+// installed (here: no iptables), the command must not run unfiltered.
+func TestEscape_AllowNetFailsClosedWithoutFirewall(t *testing.T) {
+	forEachMode(t, func(t *testing.T, bin string, env []string, work string) {
+		if !strings.HasSuffix(t.Name(), "allow_net") {
+			t.Skip("no allow_net in this mode")
+		}
+		hide := []string{"iptables", "ip6tables"}
+		if strings.Contains(t.Name(), "unshare") {
+			hide = append(hide, "bwrap")
+		}
+		env = append(env, "PATH="+pathWithout(t, hide...))
+		out, err := runSandboxedCmd(t, bin, env, work, "sh", "-c", "echo COMMAND_RAN")
+		if strings.Contains(out, "AppArmor is blocking") {
+			t.Skip("AppArmor allows bwrap only at its installed path; can't hide iptables here")
+		}
+		if err == nil || strings.Contains(out, "COMMAND_RAN") {
+			t.Errorf("command ran without its allow_net firewall: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "allow_net firewall could not be set up") {
+			t.Errorf("want a block message naming the firewall, got:\n%s", out)
 		}
 	})
 }

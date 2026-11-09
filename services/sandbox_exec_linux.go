@@ -23,7 +23,14 @@ const SandboxExecArg = "__sandbox-exec"
 // SandboxExec drops all capabilities for good and replaces this process with
 // args. It only returns on failure; the caller exits with the returned code
 // (126 can't drop or exec, 127 not found), like a shell would.
+//
+// Before "--", `--unmount PATH` detaches a setup-only mount first (while the
+// capability to do so still exists); failure there is reported, not fatal.
 func SandboxExec(args []string) int {
+	var unmount []string
+	for len(args) > 1 && args[0] == "--unmount" {
+		unmount, args = append(unmount, args[1]), args[2:]
+	}
 	if len(args) > 0 && args[0] == "--" {
 		args = args[1:]
 	}
@@ -38,6 +45,11 @@ func SandboxExec(args []string) int {
 	}
 	// Credentials are per thread: drop and exec from the same one.
 	runtime.LockOSThread()
+	for _, p := range unmount {
+		if err := unix.Unmount(p, unix.MNT_DETACH); err != nil {
+			fmt.Fprintf(os.Stderr, "[aigate] note: could not remove setup file %s: %v\n", p, err)
+		}
+	}
 	if err := DropAllCapabilities(); err != nil {
 		fmt.Fprintln(os.Stderr, "[aigate] refusing to run: "+err.Error())
 		return 126
@@ -125,13 +137,17 @@ func (s sandboxExecStage) bindScript() string {
 // execAsCommand is the last line of every setup script: back into the
 // working dir (so relative paths go through the mounts made above, not the
 // directory the shell started in), then drop capabilities and exec.
-func execAsCommand(execBin, workDir, cmd string, args []string) string {
+func execAsCommand(execBin, workDir string, unmount []string, cmd string, args []string) string {
 	var sb strings.Builder
 	if workDir != "" {
 		fmt.Fprintf(&sb, "cd %s || exit 126\n", shellQuote(workDir))
 	}
+	helper := []string{SandboxExecArg}
+	for _, p := range unmount {
+		helper = append(helper, "--unmount", p)
+	}
 	sb.WriteString("exec ")
-	sb.WriteString(shellEscape(execBin, append([]string{SandboxExecArg, "--", cmd}, args...)))
+	sb.WriteString(shellEscape(execBin, append(append(helper, "--", cmd), args...)))
 	sb.WriteString("\n")
 	return sb.String()
 }
@@ -140,13 +156,13 @@ func execAsCommand(execBin, workDir, cmd string, args []string) string {
 // point DNS at it, and with allow_net install the firewall. Without allow_net
 // every host is reachable, but the host's loopback and abstract sockets
 // still aren't (own namespace, --disable-host-loopback).
-func writeNetSetup(sb *strings.Builder, allowNet, dnsV4, dnsV6 []string, ipv6Enabled bool, ports []int) {
+func writeNetSetup(sb *strings.Builder, allowNet []string, ipv6Enabled bool, ports []int) {
 	writeWaitForTap0(sb)
 	writeResolvConf(sb, ipv6Enabled)
 	if len(allowNet) > 0 {
-		writeIPv4Rules(sb, allowNet, dnsV4)
+		writeIPv4Rules(sb, allowNet)
 		if ipv6Enabled {
-			writeIPv6Rules(sb, allowNet, dnsV6)
+			writeIPv6Rules(sb, allowNet)
 		}
 	}
 	writePortRedirects(sb, ports, len(allowNet) > 0)

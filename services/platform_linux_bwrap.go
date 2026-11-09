@@ -295,18 +295,9 @@ func writeTmpFile(pattern, content string) (string, error) {
 // fails with EPERM on systems where network-namespace creation requires
 // CAP_SYS_ADMIN in the initial user namespace.
 func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd string, args []string, stdout, stderr io.Writer) error {
-	dnsV4, dnsV6 := splitDNSByFamily(getSystemDNS())
 	ipv6Enabled := ipv6SandboxSupported()
-	if !ipv6Enabled {
-		// Don't surface v6 nameservers in the script when we can't filter them.
-		// (See the package-level comment on ipv6SandboxSupported: partial v6 is
-		// worse than none, so we drop v6 entirely on hosts without ip6tables.)
-		dnsV6 = nil
-	}
 	helpers.Log.Debug().
 		Strs("allow_net", profile.Config.AllowNet).
-		Strs("dns_servers_v4", dnsV4).
-		Strs("dns_servers_v6", dnsV6).
 		Bool("ipv6", ipv6Enabled).
 		Msg("starting bwrap sandbox with its own network namespace")
 
@@ -335,7 +326,7 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 		return err
 	}
 	bwrapArgs = append(bwrapArgs, "--ro-bind", execBin, bwrapSandboxExec)
-	bwrapArgs = appendBwrapNetArgs(bwrapArgs, profile.Config.AllowNet, dnsV4, dnsV6, ipv6Enabled, profile.Ports, cmd, args)
+	bwrapArgs = appendBwrapNetArgs(bwrapArgs, profile.Config.AllowNet, ipv6Enabled, profile.Ports, cmd, args)
 
 	bwrapCmd := exec.Command("bwrap", bwrapArgs...)
 	bwrapCmd.ExtraFiles = []*os.File{infoW} // fd 3 in child
@@ -456,7 +447,7 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 // resolv.conf (CAP_SYS_ADMIN), so we set UID 0 and add the two caps.
 // bwrap drops all capabilities by default even inside the user namespace;
 // without --uid 0, the process is UID 1000 and nf_tables rejects it.
-func appendBwrapNetArgs(args []string, allowNet, dnsV4, dnsV6 []string, ipv6Enabled bool, ports []int, cmd string, cmdArgs []string) []string {
+func appendBwrapNetArgs(args, allowNet []string, ipv6Enabled bool, ports []int, cmd string, cmdArgs []string) []string {
 	// Set UID/GID to 0 inside the sandbox: nf_tables requires being root (UID 0)
 	// in the user namespace, not just having CAP_NET_ADMIN.
 	args = append(args, "--uid", "0", "--gid", "0")
@@ -470,7 +461,7 @@ func appendBwrapNetArgs(args []string, allowNet, dnsV4, dnsV6 []string, ipv6Enab
 	// (e.g. "sh -c") are mounted over the system shell and are for the
 	// command, not for aigate's own setup.
 	args = append(args, "--ro-bind", hostShell(), bwrapSetupShell)
-	innerScript := buildNetOnlyScript(allowNet, dnsV4, dnsV6, ipv6Enabled, ports, cmd, cmdArgs)
+	innerScript := buildNetOnlyScript(allowNet, ipv6Enabled, ports, cmd, cmdArgs)
 	args = append(args, "--", bwrapSetupShell, "-c", innerScript)
 	return args
 }
@@ -520,15 +511,15 @@ func readBwrapInfoPID(r io.Reader) (int, error) {
 // network-specific setup: waiting for tap0, pointing resolv.conf at the
 // slirp4netns DNS forwarder(s), configuring iptables (+ ip6tables when v6
 // enabled), then exec'ing the command.
-func buildNetOnlyScript(allowNetHosts, dnsServersV4, dnsServersV6 []string, ipv6Enabled bool, ports []int, cmd string, args []string) string {
+func buildNetOnlyScript(allowNetHosts []string, ipv6Enabled bool, ports []int, cmd string, args []string) string {
 	var sb strings.Builder
 
 	// Ensure mount propagation is private (bwrap sets this, but be defensive).
 	sb.WriteString("mount --make-rprivate / 2>/dev/null || true\n")
 
-	writeNetSetup(&sb, allowNetHosts, dnsServersV4, dnsServersV6, ipv6Enabled, ports)
-	fmt.Fprintf(&sb, "umount -l %s\n", bwrapSetupShell) // the command gets deny_exec's view of sh
-	sb.WriteString(execAsCommand(bwrapSandboxExec, "", cmd, args))
+	writeNetSetup(&sb, allowNetHosts, ipv6Enabled, ports)
+	// The command gets deny_exec's view of sh, not the private setup shell.
+	sb.WriteString(execAsCommand(bwrapSandboxExec, "", []string{bwrapSetupShell}, cmd, args))
 	return sb.String()
 }
 
