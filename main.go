@@ -192,6 +192,15 @@ func main() {
 					Action: judgeAction.Install,
 				},
 				{
+					Name:  "eval",
+					Usage: "Score the rules, each available model and the chain on a labeled corpus",
+					Flags: []cli.Flag{
+						cli.StringFlag{Name: "corpus", Usage: "JSON array of cases (default: the built-in synthetic corpus)"},
+						cli.BoolFlag{Name: "json", Usage: "Machine-readable output"},
+					},
+					Action: judgeAction.Eval,
+				},
+				{
 					Name:      "allow-once",
 					Usage:     "Let one blocked call through (type it yourself, in your terminal)",
 					ArgsUsage: "ID",

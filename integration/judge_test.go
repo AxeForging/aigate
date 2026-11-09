@@ -142,3 +142,41 @@ func TestJudgeHook_DryRunShowsMaskedPayloadAndSendsNothing(t *testing.T) {
 	}
 	mustContain(t, got.Note, "nothing was sent")
 }
+
+func TestJudgeEval_CLI(t *testing.T) {
+	bin := buildBinary(t)
+	home := judgeHome(t, true)
+	env := append(os.Environ(), "HOME="+home, "AIGATE_CF_ACCOUNT=", "AIGATE_CF_TOKEN=")
+	run := func(args ...string) (string, error) {
+		cmd := exec.Command(bin, append([]string{"judge", "eval"}, args...)...)
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	out, err := run()
+	if err != nil {
+		t.Fatalf("eval: %v\n%s", err, out)
+	}
+	mustContain(t, out, "Judge eval on ", "JUDGE  PRECISION  RECALL", "rules  1.00")
+
+	out, err = run("--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Cases   int `json:"cases"`
+		Results []struct {
+			Judge     string  `json:"judge"`
+			Precision float64 `json:"precision"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil || got.Cases < 40 || got.Results[0].Judge != "rules" {
+		t.Errorf("--json output wrong: %v\n%s", err, out)
+	}
+
+	bad := home + "/bad.json"
+	writeTree(t, home, 0o644, map[string]string{"bad.json": `[{"id":"x","label":"maybe","event":"pre"}]`})
+	if out, err := run("--corpus", bad); err == nil || !strings.Contains(out, "label must be") {
+		t.Errorf("invalid corpus must be refused: %v\n%s", err, out)
+	}
+}

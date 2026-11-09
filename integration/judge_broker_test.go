@@ -86,3 +86,29 @@ func TestJudgeHook_BrokerUnreachableFallsBackToRules(t *testing.T) {
 	}
 	mustContain(t, string(out), "broker unreachable", `"permissionDecision":"deny"`)
 }
+
+// TestJudge_NeverWeakensTheSandbox (R3): with the judge on and saying "no
+// objection", a sandboxed session still can't read another identity's
+// files, and the hook never answers with "allow".
+func TestJudge_NeverWeakensTheSandbox(t *testing.T) {
+	bin, f := identitySetup(t, "", "")
+	cfgPath := filepath.Join(f.home, ".aigate", "config.yaml")
+	writeTree(t, f.home, 0o644, map[string]string{".aigate/config.yaml": readFile(t, cfgPath) + "judge:\n  enabled: true\n  chain: [rules]\n"})
+	data, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTree(t, f.workDir, 0o755, map[string]string{"aigate": string(data)})
+	read := preToolUse("Read", map[string]any{"file_path": f.home + "/.claude/creds"})
+	env := append(append([]string{}, f.env...), "P="+read)
+
+	cmd := exec.Command(bin, "run", "--", "/bin/sh", "-c",
+		`echo "HOOK=[$(printf %s "$P" | ./aigate judge)]"; cat ~/.claude/creds ~/.config/gh/hosts 2>/dev/null; echo MARKER_DONE`)
+	cmd.Env, cmd.Dir = env, f.workDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, out)
+	}
+	mustContain(t, string(out), "[aigate] judge: on (rules)", "HOOK=[]", "MARKER_DONE")
+	refuteLeak(t, string(out), "canary-personal-claude", "canary-personal-gh", `"allow"`)
+}
