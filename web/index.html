@@ -222,6 +222,8 @@
     .topbar { min-height: 0; }
   }
   .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  /* Nav jumps land below the sticky header (taller on phones, where its CTA wraps). */
+  section[id] { scroll-margin-top: 7rem; }
 </style>
 </head>
 <body>
