@@ -346,16 +346,11 @@ func TestBuildNetFilterScript(t *testing.T) {
 
 	t.Run("resolves hosts inside namespace via getent", func(t *testing.T) {
 		script := buildNetFilterScript([]string{"api.anthropic.com", "1.2.3.4"}, false, profile, testStage, "echo", []string{"hello"})
-		// Hostnames should be resolved inside the namespace via getent ahostsv4
-		if !strings.Contains(script, "getent ahostsv4 \"api.anthropic.com\"") {
-			t.Error("script should resolve api.anthropic.com inside namespace")
-		}
-		// Raw IPs are also passed through getent (getent handles IPs fine)
-		if !strings.Contains(script, "getent ahostsv4 \"1.2.3.4\"") {
-			t.Error("script should include raw IP 1.2.3.4 via getent")
-		}
-		if !strings.Contains(script, "iptables -A OUTPUT -j REJECT") {
-			t.Error("script should contain final REJECT rule")
+		// Hostnames and raw IPs both go through getent inside the namespace.
+		for _, want := range []string{`getent ahostsv4 "api.anthropic.com"`, `getent ahostsv4 "1.2.3.4"`, "iptables -A OUTPUT -j REJECT"} {
+			if !strings.Contains(script, want) {
+				t.Errorf("script should contain %q", want)
+			}
 		}
 	})
 
