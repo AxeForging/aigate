@@ -126,6 +126,13 @@ CONFIGURATION
         - aws_secret
         - github
         - bearer
+        - cloudflare
+        - gitlab
+        - slack
+        - stripe
+        - google
+        - npm
+        - huggingface
 
   Example .aigate.yaml (project-level, adds to global):
     deny_read:
@@ -154,10 +161,18 @@ OUTPUT MASKING (mask_stdout)
     anthropic   sk-ant-...                     → sk-ant-***
     aws_key     AKIA... (access key ID)        → AKIA***
     aws_secret  AWS_SECRET_ACCESS_KEY=...      → AWS_SECRET_ACCESS_KEY=***
-    github      ghp_, gho_, ghu_, ghs_, ghr_  → ghp_***
+    github      ghp_/gho_/ghu_/ghs_/ghr_, github_pat_ → ghp_***
     bearer      Bearer <token>                 → Bearer ***
+    cloudflare  cfut_/cfat_ tokens, cfk_ keys  → cfut***
+    gitlab      glpat-...                      → glpat-***
+    slack       xoxb-/xoxp-/xoxa-/xoxr-/xoxs-  → xoxb-***
+    stripe      sk_live_/rk_live_...           → sk_live_***
+    google      AIza... API keys               → AIza***
+    npm         npm_...                        → npm_***
+    huggingface hf_...                         → hf_***
 
-  All 6 presets are enabled by default (aigate init).
+  All 13 presets are enabled by default for new configs (aigate init). Older
+  configs keep their list: add the new names under mask_stdout.presets.
 
   Pattern options:
     regex            RE2-compatible regular expression (required)
@@ -182,7 +197,7 @@ WHAT THE AI AGENT SEES INSIDE THE SANDBOX
     [aigate] deny_exec: curl, wget, ssh
     [aigate] allow_net: api.anthropic.com (all other outbound connections will be blocked)
     [aigate] allowed_paths: ~/.cache, ~/.config (plus the working directory; the rest of $HOME is hidden)
-    [aigate] mask_stdout: openai, anthropic, aws_key, aws_secret, github, bearer
+    [aigate] mask_stdout: openai, anthropic, aws_key, aws_secret, github, bearer, cloudflare, …
 
   With scope mode on, non-scoped home files are invisible (plain "No such
   file"), and ~/.aigate-scope-README inside the sandbox explains the scope

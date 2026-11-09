@@ -290,6 +290,13 @@ mask_stdout:
     - aws_secret
     - github
     - bearer
+    - cloudflare
+    - gitlab
+    - slack
+    - stripe
+    - google
+    - npm
+    - huggingface
   patterns:
     # Generic key=value / key: value assignments for common secret names
     - regex: "(?:api_?key|secret|password|passwd|token|credential)\\s*[=:]\\s*\\S+"
@@ -309,8 +316,20 @@ mask_stdout:
 | `anthropic` | `sk-ant-...` | `sk-ant-***` |
 | `aws_key` | `AKIA...` (access key ID) | `AKIA***` |
 | `aws_secret` | `AWS_SECRET_ACCESS_KEY=...` assignment | `AWS_SECRET_ACCESS_KEY=***` |
-| `github` | `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_` | `ghp_***` |
+| `github` | `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, fine-grained `github_pat_` | `ghp_***` |
 | `bearer` | `Bearer <token>` in headers/logs | `Bearer ***` |
+| `cloudflare` | `cfut_`/`cfat_` API tokens, `cfk_` global keys ([scannable format](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)) | `cfut***` |
+| `gitlab` | `glpat-...` access tokens | `glpat-***` |
+| `slack` | `xoxb-`, `xoxp-`, `xoxa-`, `xoxr-`, `xoxs-` | `xoxb-***` |
+| `stripe` | `sk_live_...`, `rk_live_...` | `sk_live_***` |
+| `google` | `AIza...` API keys | `AIza***` |
+| `npm` | `npm_...` tokens | `npm_***` |
+| `huggingface` | `hf_...` tokens | `hf_***` |
+
+All presets are on by default for new configs (`aigate init`). An existing
+config keeps its list — add the new names under `mask_stdout.presets`.
+Lines are pre-checked for each preset's prefix, so more presets cost almost
+nothing (~15 MB/s through all 13 on a laptop; agents print KB/s).
 
 Enable presets in your config:
 

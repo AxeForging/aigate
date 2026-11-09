@@ -2,6 +2,7 @@ package services
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 
@@ -450,5 +451,92 @@ func TestBuiltinPresetNames(t *testing.T) {
 		if !nameSet[want] {
 			t.Errorf("expected preset %q in BuiltinPresetNames()", want)
 		}
+	}
+}
+
+// Token-shaped values are assembled at runtime so no literal that looks like a
+// real credential sits in the (public) source. They are obviously fake.
+func TestMaskingWriter_ExtraPresets(t *testing.T) {
+	r := strings.Repeat
+	tests := []struct {
+		preset, secret, masked, nearMiss string
+	}{
+		{"cloudflare", "cf" + "ut_" + r("a", 40) + "deadbeef", "cfut***", "cf" + "ut_" + r("a", 20)},
+		{"cloudflare", "cf" + "at_" + r("B", 40) + "0123abcd", "cfat***", "cf" + "xx_" + r("a", 48)},
+		{"cloudflare", "cf" + "k_" + r("c", 40) + "00000000", "cfk_***", "cf" + "k_" + r("c", 40) + "ZZZZZZZZ"},
+		{"github", "github" + "_pat_" + r("A", 30), "gith***", "github" + "_pat_" + r("A", 5)},
+		{"gitlab", "gl" + "pat-" + r("x", 20), "glpat-***", "gl" + "pat-" + r("x", 5)},
+		{"slack", "xo" + "xb-" + r("1", 12), "xoxb-***", "xo" + "xz-" + r("1", 12)},
+		{"stripe", "sk" + "_live_" + r("z", 24), "sk_live_***", "sk" + "_test_" + r("z", 24)},
+		{"google", "AI" + "za" + r("Q", 35), "AIza***", "AI" + "za" + r("Q", 10)},
+		{"npm", "np" + "m_" + r("n", 36), "npm_***", "np" + "m_" + r("n", 10)},
+		{"huggingface", "h" + "f_" + r("h", 34), "hf_***", "h" + "f_" + r("h", 10)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.preset+"/"+tt.masked, func(t *testing.T) {
+			var buf bytes.Buffer
+			mw, err := NewMaskingWriter(&buf, domain.MaskStdout{Presets: []string{tt.preset}})
+			if err != nil {
+				t.Fatalf("preset %q: %v", tt.preset, err)
+			}
+			if _, err := mw.Write([]byte("key=" + tt.secret + " near=" + tt.nearMiss + "\n")); err != nil {
+				t.Fatal(err)
+			}
+			_ = mw.Flush()
+			out := buf.String()
+			if strings.Contains(out, tt.secret) {
+				t.Errorf("secret not masked: %q", out)
+			}
+			if !strings.Contains(out, "key="+tt.masked) {
+				t.Errorf("want %q in %q", "key="+tt.masked, out)
+			}
+			if !strings.Contains(out, "near="+tt.nearMiss) {
+				t.Errorf("near-miss must stay untouched: %q", out)
+			}
+		})
+	}
+}
+
+func TestInitDefaultConfig_EnablesNewPresets(t *testing.T) {
+	presets := NewConfigService().InitDefaultConfig().MaskStdout.Presets
+	for _, want := range []string{"anthropic", "cloudflare", "github", "gitlab", "slack", "stripe", "google", "npm", "huggingface"} {
+		found := false
+		for _, p := range presets {
+			found = found || p == want
+		}
+		if !found {
+			t.Errorf("default config should enable %q", want)
+		}
+		if _, ok := builtinPresets[want]; !ok {
+			t.Errorf("default preset %q is not a builtin", want)
+		}
+	}
+}
+
+// TestMaskingWriter_PrefilterKeepsMatches: the literal prefilter must never
+// skip a line the regex would have masked (mixed-case Bearer, prefixes mid-line).
+func TestMaskingWriter_PrefilterKeepsMatches(t *testing.T) {
+	cases := map[string]string{
+		"bearer":    "Authorization: BeArEr " + strings.Repeat("t", 24),
+		"anthropic": "x=" + "sk-" + "ant-" + strings.Repeat("k", 24),
+		"github":    "(" + "gh" + "p_" + strings.Repeat("G", 36) + ")",
+	}
+	for preset, line := range cases {
+		var buf bytes.Buffer
+		mw, err := NewMaskingWriter(&buf, domain.MaskStdout{Presets: []string{preset}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = mw.Write([]byte(line + "\n"))
+		if !strings.Contains(buf.String(), "***") {
+			t.Errorf("%s: prefilter skipped a real match: %q", preset, buf.String())
+		}
+	}
+}
+
+func TestNewMaskingWriter_UnknownPresetListsAll(t *testing.T) {
+	_, err := NewMaskingWriter(io.Discard, domain.MaskStdout{Presets: []string{"nope"}})
+	if err == nil || !strings.Contains(err.Error(), "cloudflare") || !strings.Contains(err.Error(), "huggingface") {
+		t.Errorf("error should list every preset, got %v", err)
 	}
 }
