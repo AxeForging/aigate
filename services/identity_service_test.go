@@ -358,7 +358,7 @@ func TestResolve_SymlinkedHomeMatchesBinding(t *testing.T) {
 	if err != nil || got == nil || got.Name != "work" {
 		t.Fatalf("binding ~/work should match the resolved workdir, got %+v err=%v", got, err)
 	}
-	if CanonicalPath(filepath.Join(link, "work")) != filepath.Join(real, "work") {
+	if CanonicalPath(filepath.Join(link, "work")) != CanonicalPath(filepath.Join(real, "work")) {
 		t.Errorf("CanonicalPath should resolve the symlinked home")
 	}
 }

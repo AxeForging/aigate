@@ -86,3 +86,39 @@ func TestIdentityEnvCommand(t *testing.T) {
 		t.Errorf("/usr/bin/env must exist on macOS: %v", err)
 	}
 }
+
+func TestParentsWithin(t *testing.T) {
+	got := parentsWithin("/Users/me/work/api", "/Users/me")
+	want := []string{"/Users/me/work", "/Users/me"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("parentsWithin = %v, want %v", got, want)
+	}
+	if got := parentsWithin("/opt/x", "/Users/me"); got != nil {
+		t.Errorf("outside root → nothing, got %v", got)
+	}
+	if got := parentsWithin("/Users/meow/x", "/Users/me"); got != nil {
+		t.Errorf("prefix-but-not-child must not match, got %v", got)
+	}
+}
+
+func TestGenerateSeatbeltProfile_ParentMetadataOnly(t *testing.T) {
+	home, cfg := identityHome(t)
+	svc := NewIdentityService()
+	id, _ := svc.Resolve(cfg, "work", home)
+	allowed, _ := svc.EffectiveAllowedPaths(cfg, id, home+"/work/api")
+	sb := generateSeatbeltProfile(domain.SandboxProfile{
+		Config: domain.Config{AllowedPaths: allowed}, WorkDir: home + "/work/api", Identity: id,
+	})
+	rh := realPath(home)
+	for _, want := range []string{
+		`(allow file-read-metadata (literal "` + rh + `/work"))`,
+		`(allow file-read-metadata (literal "` + rh + `"))`,
+	} {
+		if !strings.Contains(sb, want) {
+			t.Errorf("missing %s:\n%s", want, sb)
+		}
+	}
+	if strings.Contains(sb, `(allow file-read* (subpath "`+rh+`"))`) || strings.Contains(sb, `file-read-data (literal "`+rh+`")`) {
+		t.Errorf("$HOME itself must not become listable/readable:\n%s", sb)
+	}
+}

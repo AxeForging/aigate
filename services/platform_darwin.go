@@ -251,6 +251,34 @@ func writeSeatbeltScopeRules(sb *strings.Builder, profile domain.SandboxProfile)
 	for _, p := range scoped {
 		allowPath(p)
 	}
+
+	// Tools like git stat every parent of the working dir; allow metadata
+	// (not listing or contents) of the folders between $HOME and each
+	// allowed path, or they fail with "Operation not permitted".
+	seen := map[string]bool{}
+	for _, p := range append([]string{profile.WorkDir}, scoped...) {
+		for _, dir := range parentsWithin(realPath(p), realPath(home)) {
+			if !seen[dir] {
+				seen[dir] = true
+				fmt.Fprintf(sb, "(allow file-read-metadata (literal %q))\n", dir)
+			}
+		}
+	}
+}
+
+// parentsWithin returns the parent dirs of p up to and including root, or
+// nothing when p is not under root.
+func parentsWithin(p, root string) []string {
+	if p == "" || !strings.HasPrefix(p, root+"/") {
+		return nil
+	}
+	var out []string
+	for dir := filepath.Dir(p); ; dir = filepath.Dir(dir) {
+		out = append(out, dir)
+		if dir == root || dir == "/" {
+			return out
+		}
+	}
 }
 
 func generateSeatbeltProfile(profile domain.SandboxProfile) string {
