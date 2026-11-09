@@ -80,3 +80,36 @@ jobs:
           version: v2.12.2
           install-mode: goinstall
           args: --timeout=5m
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.10'
+          cache: true
+      - name: Install sandbox tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap slirp4netns acl
+      - name: AppArmor userns check (Ubuntu 23.10+ restriction)
+        run: |
+          go build -o /tmp/aigate .
+          /tmp/aigate doctor > /tmp/doctor.txt 2>&1 || true
+          cat /tmp/doctor.txt
+          if grep -q "AppArmor is blocking" /tmp/doctor.txt; then
+            # The fix aigate prints must work.
+            sudo tee /etc/apparmor.d/bwrap >/dev/null <<EOF
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile bwrap $(command -v bwrap) flags=(unconfined) {
+            userns,
+            include if exists <local/bwrap>
+          }
+          EOF
+            sudo systemctl reload apparmor
+            /tmp/aigate doctor | grep -q "apparmor userns  bwrap can create its namespaces"
+          elif [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = "1" ]; then
+            # Restricted, but this image already allows bwrap: doctor must say so.
+            grep -q "apparmor userns  bwrap can create its namespaces" /tmp/doctor.txt
+          fi
+      - run: go test -race -count=1 ./...
