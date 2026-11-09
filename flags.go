@@ -49,3 +49,8 @@ var identityFlag = cli.StringFlag{
 	Name:  "identity, i",
 	Usage: "Run as this identity (see: aigate identity list). Default: the identity bound to this folder, then default_identity",
 }
+
+var judgeModeFlag = cli.StringFlag{
+	Name:  "judge",
+	Usage: "off: run this session without the judge (audited; the sandbox still applies)",
+}

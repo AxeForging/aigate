@@ -124,4 +124,13 @@ type SandboxProfile struct {
 	Config   Config
 	WorkDir  string
 	Identity *ResolvedIdentity // nil when no identity is active
+
+	// JudgeSocket is the host-side judge broker socket (empty: judge off).
+	// It is bound into the sandbox so hooks there can reach it.
+	JudgeSocket string
+	// JudgeOff: this session runs without the judge (aigate run --judge=off).
+	JudgeOff bool
+	// UnsetEnv are extra variables removed inside the sandbox (e.g. judge
+	// provider credentials, which must stay outside).
+	UnsetEnv []string
 }

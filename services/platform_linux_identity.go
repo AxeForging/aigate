@@ -9,19 +9,19 @@ import (
 	"github.com/AxeForging/aigate/domain"
 )
 
-// bwrapIdentityArgs mounts the identity's ssh key read-only and sets/unsets
-// its env vars. Its dirs reach the sandbox through allowed_paths (scope
-// mode). Append after deny_read mounts: the default deny on ~/.ssh/ would
-// otherwise hide the key again.
-func bwrapIdentityArgs(id *domain.ResolvedIdentity) []string {
-	if id == nil {
-		return nil
-	}
+// bwrapIdentityArgs mounts the identity's ssh key read-only and the judge
+// broker socket, and sets/unsets the session's env vars. Identity dirs reach
+// the sandbox through allowed_paths (scope mode). Append after deny_read
+// mounts: the default deny on ~/.ssh/ would otherwise hide the key again.
+func bwrapIdentityArgs(profile domain.SandboxProfile) []string {
 	var args []string
-	if id.SSHKey != "" {
+	if id := profile.Identity; id != nil && id.SSHKey != "" {
 		args = append(args, "--ro-bind", id.SSHKey, id.SSHKey)
 	}
-	set, unset := identityEnv(id)
+	if profile.JudgeSocket != "" {
+		args = append(args, "--bind", profile.JudgeSocket, JudgeSocketInSandbox)
+	}
+	set, unset := sessionEnv(profile, JudgeSocketInSandbox)
 	for _, v := range unset {
 		args = append(args, "--unsetenv", v)
 	}
@@ -44,7 +44,7 @@ func checkFallbackIdentity(profile domain.SandboxProfile) error {
 // buildIdentityOverrides is the unshare-fallback equivalent of the env part
 // of bwrapIdentityArgs.
 func buildIdentityOverrides(profile domain.SandboxProfile) string {
-	set, unset := identityEnv(profile.Identity)
+	set, unset := sessionEnv(profile, profile.JudgeSocket) // /tmp is shared in the fallback
 	if len(set) == 0 && len(unset) == 0 {
 		return ""
 	}

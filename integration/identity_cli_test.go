@@ -204,7 +204,8 @@ func TestHelp_DocumentsIdentityCommands(t *testing.T) {
 	bin := buildBinary(t)
 	home := t.TempDir()
 	out, _ := aigateIn(t, bin, home, home, "help-ai")
-	mustContain(t, out, "aigate identity add work", "aigate identity use none", "aigate whoami", "aigate run --identity personal -- claude")
+	mustContain(t, out, "aigate identity add work", "aigate identity use none", "aigate whoami", "aigate run --identity personal -- claude",
+		"aigate judge install", "aigate judge allow-once ID", "aigate run --judge=off -- claude")
 	out, _ = aigateIn(t, bin, home, home, "identity", "--help")
 	mustContain(t, out, "add", "use", "list", "show", "remove")
 	out, _ = aigateIn(t, bin, home, home, "run", "--help")

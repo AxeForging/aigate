@@ -61,6 +61,13 @@ type Chain struct {
 	Models        []Judge
 	EscalateBelow float64
 	Timeout       time.Duration
+	Skipped       []string // configured models left out, with why
+}
+
+// availability is implemented by adapters that need credentials; an
+// unavailable one is left out of the chain instead of failing every call.
+type availability interface {
+	Available() error
 }
 
 // Decide never returns an error: a failing model falls back to the rules
@@ -119,9 +126,19 @@ func BuildJudgeChain(s JudgeSettings) *Chain {
 		case JudgeRules:
 			c.Rules = RulesJudge{}
 		default:
-			if build, ok := judgeAdapters[name]; ok {
-				c.Models = append(c.Models, build(s))
+			build, ok := judgeAdapters[name]
+			if !ok {
+				c.Skipped = append(c.Skipped, name+": not available yet")
+				continue
 			}
+			j := build(s)
+			if a, ok := j.(availability); ok {
+				if err := a.Available(); err != nil {
+					c.Skipped = append(c.Skipped, fmt.Sprintf("%s: %v", name, err))
+					continue
+				}
+			}
+			c.Models = append(c.Models, j)
 		}
 	}
 	return c

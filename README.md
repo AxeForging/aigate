@@ -58,6 +58,7 @@ AI coding tools rely on application-level permission systems that can be bypasse
 - **Process isolation** - Bubblewrap (`bwrap`) + mount namespaces isolate the sandbox declaratively (Linux); Seatbelt on macOS
 - **Network isolation** - `bwrap --unshare-net` + `slirp4netns` + `iptables` (+ `ip6tables` for IPv6 when available) restrict egress to allowed domains (Linux)
 - **Identities** - Separate Claude Code / GitHub CLI logins, git author and ssh key per account (work, personal, clients); a session can't see the other identities' logins. Guided setup with `aigate identity add`
+- **Judge (optional)** - An extra check on each Claude Code tool call: fast local rules, then Cloudflare Clef / Jev models when the rules have no opinion. It can only deny or ask, never allow; the kernel sandbox stays the boundary. `aigate judge install` to turn it on
 - **Command blocking** - Deny execution of dangerous commands (curl, wget, ssh)
 - **Output masking** - Redact secrets (API keys, tokens) from stdout/stderr before they reach the terminal
 - **Audit log + dashboard** - Every run and blocked command is recorded to `~/.aigate/audit.jsonl`; `aigate serve` exposes a local web dashboard over it
@@ -92,6 +93,9 @@ aigate identity add work                    # New identity: own Claude/gh logins
 aigate identity use work                    # This folder runs as work
 aigate whoami                               # Which identity runs here, and why
 aigate run --identity personal -- claude    # Pick an identity for one run
+aigate judge install                        # Optional judge: Claude Code hooks + turn it on
+aigate judge eval                           # How well rules / models / chain score on the corpus
+aigate run --judge=off -- claude            # One session without the judge (audited)
 aigate status                               # Show current rules
 aigate serve                                # Local web dashboard over the audit log
 aigate help-ai                              # Show AI-friendly usage examples

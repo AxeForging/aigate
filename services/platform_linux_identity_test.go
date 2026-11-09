@@ -10,7 +10,7 @@ import (
 )
 
 func TestBwrapIdentityArgs_NoIdentityAddsNothing(t *testing.T) {
-	if args := bwrapIdentityArgs(nil); len(args) != 0 {
+	if args := bwrapIdentityArgs(domain.SandboxProfile{}); len(args) != 0 {
 		t.Errorf("want no args without identity, got %v", args)
 	}
 }
@@ -78,5 +78,20 @@ func TestCheckFallbackIdentity_RefusesSSHKeyWithFix(t *testing.T) {
 	}
 	if checkFallbackIdentity(domain.SandboxProfile{}) != nil {
 		t.Error("no identity must pass")
+	}
+}
+
+func TestBuildBwrapArgs_JudgeSocketAndUnsetEnv(t *testing.T) {
+	profile := domain.SandboxProfile{WorkDir: "/tmp", JudgeSocket: "/tmp/aigate-judge-x/judge.sock", UnsetEnv: []string{"AIGATE_CF_TOKEN"}}
+	args, tmp := setupBwrapArgsTest(t, profile)
+	defer cleanupTmp(tmp)
+	if !containsTriple(args, "--bind", profile.JudgeSocket, JudgeSocketInSandbox) {
+		t.Errorf("judge socket not bound into the sandbox: %v", args)
+	}
+	if !containsTriple(args, "--setenv", "AIGATE_JUDGE_SOCK", JudgeSocketInSandbox) {
+		t.Errorf("AIGATE_JUDGE_SOCK not set: %v", args)
+	}
+	if !containsPair(args, "--unsetenv", "AIGATE_CF_TOKEN") {
+		t.Errorf("judge credentials must be removed from the sandbox: %v", args)
 	}
 }

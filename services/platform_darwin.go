@@ -201,7 +201,7 @@ func (p *DarwinPlatform) RunSandboxed(profile domain.SandboxProfile, cmd string,
 
 	// Run command under sandbox-exec; /usr/bin/env applies identity env vars.
 	sandboxArgs := []string{"-f", tmpFile.Name()}
-	sandboxArgs = append(sandboxArgs, identityEnvCommand(profile.Identity)...)
+	sandboxArgs = append(sandboxArgs, identityEnvCommand(profile)...)
 	sandboxArgs = append(sandboxArgs, cmd)
 	sandboxArgs = append(sandboxArgs, args...)
 	return p.exec.RunPassthroughWith(stdout, stderr, "sandbox-exec", sandboxArgs...)
@@ -356,8 +356,8 @@ func realPath(p string) string {
 
 // identityEnvCommand returns "/usr/bin/env -u X … K=V …" for an identity, or
 // nothing when no identity is active.
-func identityEnvCommand(id *domain.ResolvedIdentity) []string {
-	set, unset := identityEnv(id)
+func identityEnvCommand(profile domain.SandboxProfile) []string {
+	set, unset := sessionEnv(profile, profile.JudgeSocket) // /tmp is shared on macOS
 	if len(set) == 0 && len(unset) == 0 {
 		return nil
 	}

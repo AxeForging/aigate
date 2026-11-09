@@ -146,6 +146,7 @@ func TestClefJudge_Errors(t *testing.T) {
 }
 
 func TestBuildJudgeChain_RegistersClef(t *testing.T) {
+	clefWithEnv(t) // credentials set
 	c := BuildJudgeChain(DefaultJudgeSettings())
 	if c.Rules == nil || len(c.Models) != 2 || c.Models[0].Name() != JudgeClefFlash || c.Models[1].Name() != JudgeClef {
 		t.Errorf("default chain should be rules → clef-flash → clef, got %+v", c)
@@ -154,5 +155,49 @@ func TestBuildJudgeChain_RegistersClef(t *testing.T) {
 	off.Chain = []string{JudgeRules, JudgeOff}
 	if c := BuildJudgeChain(off); c.Rules != nil || len(c.Models) != 0 {
 		t.Error("off must disable the whole chain")
+	}
+}
+
+func TestBuildJudgeChain_SkipsModelsWithoutCredentials(t *testing.T) {
+	t.Setenv("AIGATE_CF_ACCOUNT", "")
+	t.Setenv("AIGATE_CF_TOKEN", "")
+	c := BuildJudgeChain(DefaultJudgeSettings())
+	if c.Rules == nil || len(c.Models) != 0 || len(c.Skipped) != 2 || !strings.Contains(c.Skipped[0], "set AIGATE_CF_ACCOUNT") {
+		t.Errorf("models without credentials must be skipped with a reason, got %+v", c)
+	}
+	s := DefaultJudgeSettings()
+	s.Chain = []string{JudgeRules, JudgeJev}
+	t.Setenv("AIGATE_JEV_TOKEN", "")
+	if c := BuildJudgeChain(s); len(c.Skipped) != 1 || !strings.Contains(c.Skipped[0], "jev: set AIGATE_JEV_TOKEN") {
+		t.Errorf("jev without its token must be skipped with the variable named: %+v", c.Skipped)
+	}
+}
+
+func TestJevJudge_TopLevelAnswersAndOwnEndpoint(t *testing.T) {
+	var gotPath, gotAuth, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotPath, gotAuth, gotBody = r.URL.Path, r.Header.Get("Authorization"), string(b)
+		_, _ = io.WriteString(w, `{"answers":`+answers(0.97, 0.1, "deny", 0.88)+`}`)
+	}))
+	defer srv.Close()
+	old := jevAPIBase
+	jevAPIBase = srv.URL
+	defer func() { jevAPIBase = old }()
+	t.Setenv("AIGATE_JEV_TOKEN", "jev-canary-for-tests")
+
+	s := DefaultJudgeSettings()
+	s.Chain = []string{JudgeRules, JudgeJev}
+	c := BuildJudgeChain(s)
+	if len(c.Models) != 1 || c.Models[0].Name() != JudgeJev {
+		t.Fatalf("jev should be in the chain when its token is set: %+v", c)
+	}
+	v, err := c.Models[0].Judge(context.Background(), Call{Event: EventPreTool, Tool: "Bash", Target: "rm -rf ~/"})
+	if err != nil || v.Outcome != Deny || v.Judge != JudgeJev {
+		t.Fatalf("got %+v err=%v", v, err)
+	}
+	if gotPath != "/v1/systemone" || gotAuth != "Bearer jev-canary-for-tests" ||
+		!strings.Contains(gotBody, `"model":"jev-latest"`) || strings.Contains(gotBody, "jev-canary-for-tests") {
+		t.Errorf("request wrong: path=%q auth=%q body=%s", gotPath, gotAuth, gotBody)
 	}
 }

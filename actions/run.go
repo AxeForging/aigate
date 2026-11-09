@@ -69,6 +69,19 @@ func (a *RunAction) Execute(c *cli.Context) error {
 		Config:   *merged,
 		WorkDir:  workDir,
 		Identity: identity,
+		// Judge provider credentials stay outside, judge on or off.
+		UnsetEnv: services.JudgeCredentialEnv(globalCfg.Judge),
+	}
+	judgeOff, err := judgeOffForRun(a.configSvc, c.String("judge"), &profile)
+	if err != nil {
+		return err
+	}
+	if !judgeOff {
+		stopJudge, err := startJudgeBroker(a.configSvc, globalCfg, &profile)
+		if err != nil {
+			return err
+		}
+		defer stopJudge()
 	}
 
 	helpers.Log.Debug().

@@ -25,6 +25,16 @@ services/        Core business logic
   block_message.go            One "[aigate] blocked … — layer: … To allow: …" format
   userns_check.go             Detect Ubuntu AppArmor user-namespace block + printed fix
   pty.go                      PTY passthrough; stoppable stdin copy
+  judge_config.go             judge: settings, defaults, validation (env var names only)
+  judge_service.go            Judge port, Chain (rules → models, strictest wins, fallback), adapter registry
+  judge_rules.go              Local rules (keyword prefilters, µs per call)
+  judge_clef.go               Clef / Clef-flash / Jev adapters (typed questions aigate-judge-v1)
+  judge_payload.go            What may leave the machine: masked with every preset, capped
+  judge_hook.go               Claude Code hook payload ↔ Call; hook output (never "allow")
+  judge_broker.go             Socket broker for hooks inside the sandbox; audit; warnings
+  judge_install.go            settings.json hook install/uninstall with exact restore
+  judge_override.go           allow-once grants (single use, 10 min)
+  judge_eval.go, judge_corpus.json   Labeled synthetic corpus + scoring
   config_service.go           Config load/save/merge (global + project), InitDefaultConfig
   rule_service.go             Rule CRUD (add/remove/list deny rules)
   runner_service.go           Sandboxed process launcher
@@ -76,6 +86,7 @@ scripts/test-vm.sh  Run the suite in throwaway VMs per distro (make test-vm DIST
 - **Config merging**: Global config (`~/.aigate/config.yaml`) + project config (`.aigate.yaml`) merge with project extending global.
 - **Filesystem scope (`allowed_paths`)**: when non-empty, `$HOME` is replaced by an empty tmpfs (bwrap `--tmpfs`; rbind-stage + tmpfs in the unshare fallback; Seatbelt read+write denies on macOS) and only the workdir + allowed paths are bound back read-write. Non-scoped home files are invisible — reads AND writes blocked; deny rules are mounted after scope binds so they always win. Fallback fails closed (`exit 125`) if the hide cannot be established. `~/.aigate-scope-README` inside the sandbox + `/tmp/.aigate-policy` explain the policy to agents. Empty list = legacy behavior (home fully accessible).
 - **Identities**: only read from the global config (project `.aigate.yaml` identity keys are rejected). Under an identity, scope mode is forced: broad defaults (`~/.config`, `~/.local`, `~/.claude*`) are dropped, the identity's dirs are allowed, and any path touching another identity is a hard error. Env sets `CLAUDE_CONFIG_DIR`/`GH_CONFIG_DIR`/git author/`GIT_SSH_COMMAND` and unsets host credential vars. The identity on `~/.claude` leaves `CLAUDE_CONFIG_DIR` unset (Claude Code changes settings file + macOS Keychain item when it is set). Paths are compared resolved (`CanonicalPath`) because of symlinked homes.
+- **Judge is stricter-only**: outcomes are deny / ask / no-objection; no-objection prints nothing so Claude Code's own permissions apply. Hooks inside `aigate run` forward to a host-side broker socket, so config, provider credentials and audit stay outside the sandbox; judge credential env vars are removed from every sandbox. allow-once needs a TTY and lives in `~/.aigate` (hidden inside), so an agent can't approve itself.
 - **Audit log is append-only JSON Lines**: `AuditService` writes `run_started` / `blocked` events to `~/.aigate/audit.jsonl` under a mutex. `aigate serve` (`internal/web`) is a read-only dashboard over that file; it never mutates sandbox state. Keep the dashboard out of the sandbox enforcement path.
 
 ## Testing

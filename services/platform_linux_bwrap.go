@@ -216,7 +216,7 @@ func (p *LinuxPlatform) buildBwrapArgs(profile domain.SandboxProfile, tmpFiles *
 	args = append(args, execArgs...)
 
 	// After deny mounts so the identity's ssh key survives the ~/.ssh/ deny.
-	args = append(args, bwrapIdentityArgs(profile.Identity)...)
+	args = append(args, bwrapIdentityArgs(profile)...)
 
 	// Last, so it wins over the home and allowed_paths binds above.
 	args = append(args, bwrapAgentArgs()...)

@@ -8,11 +8,18 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
-// cloudflareAPIBase is swapped in tests for a local fake.
-var cloudflareAPIBase = "https://api.cloudflare.com/client/v4"
+// API bases are swapped in tests for local fakes.
+var (
+	cloudflareAPIBase = "https://api.cloudflare.com/client/v4"
+	jevAPIBase        = "https://api.typesafe.ai"
+)
+
+// jevModelID is TypeSafe's alias for the current Jev release.
+const jevModelID = "jev-latest"
 
 // judgeQuestionsVersion pins the question wording so eval results stay
 // comparable; bump it when the questions change.
@@ -32,20 +39,34 @@ var clefQuestions = map[string]any{
 		}},
 }
 
-// ClefJudge asks a Cloudflare Clef model (clef or clef-flash) for typed
-// probabilities and maps them to an outcome.
+// ClefJudge asks a typed decision model (Cloudflare Clef / Clef-flash, or
+// TypeSafe Jev, which shares the API shape) for probabilities and maps them
+// to an outcome.
 type ClefJudge struct {
-	model      string
-	accountEnv string
-	tokenEnv   string
-	denyAbove  float64
-	askAbove   float64
-	excerpt    int
-	client     *http.Client
+	model     string   // judge name in config
+	modelID   string   // "model" field sent to the API
+	needEnv   []string // credentials that must be set
+	tokenEnv  string
+	url       func() string
+	denyAbove float64
+	askAbove  float64
+	excerpt   int
+	client    *http.Client
 }
 
 func NewClefJudge(model string, s JudgeSettings) *ClefJudge {
-	return &ClefJudge{model: model, accountEnv: s.CFAccountEnv, tokenEnv: s.CFTokenEnv,
+	return &ClefJudge{model: model, modelID: model, needEnv: []string{s.CFAccountEnv, s.CFTokenEnv}, tokenEnv: s.CFTokenEnv,
+		url: func() string {
+			return fmt.Sprintf("%s/accounts/%s/ai/run/@cf/cloudflare/%s", cloudflareAPIBase, os.Getenv(s.CFAccountEnv), model)
+		},
+		denyAbove: s.DenyAbove, askAbove: s.AskAbove, excerpt: s.ExcerptBytes,
+		client: &http.Client{Timeout: maxJudgeTimeout}}
+}
+
+// NewJevJudge talks to TypeSafe's Jev; same questions and mapping as Clef.
+func NewJevJudge(s JudgeSettings) *ClefJudge {
+	return &ClefJudge{model: JudgeJev, modelID: jevModelID, needEnv: []string{s.JevTokenEnv}, tokenEnv: s.JevTokenEnv,
+		url:       func() string { return jevAPIBase + "/v1/systemone" },
 		denyAbove: s.DenyAbove, askAbove: s.AskAbove, excerpt: s.ExcerptBytes,
 		client: &http.Client{Timeout: maxJudgeTimeout}}
 }
@@ -53,9 +74,20 @@ func NewClefJudge(model string, s JudgeSettings) *ClefJudge {
 func init() {
 	judgeAdapters[JudgeClefFlash] = func(s JudgeSettings) Judge { return NewClefJudge(JudgeClefFlash, s) }
 	judgeAdapters[JudgeClef] = func(s JudgeSettings) Judge { return NewClefJudge(JudgeClef, s) }
+	judgeAdapters[JudgeJev] = func(s JudgeSettings) Judge { return NewJevJudge(s) }
 }
 
 func (c *ClefJudge) Name() string { return c.model }
+
+// Available reports whether the credentials this judge needs are set.
+func (c *ClefJudge) Available() error {
+	for _, v := range c.needEnv {
+		if os.Getenv(v) == "" {
+			return fmt.Errorf("set %s", strings.Join(c.needEnv, " and "))
+		}
+	}
+	return nil
+}
 
 type clefAnswer struct {
 	Noul          *float64           `json:"noul"`
@@ -64,8 +96,11 @@ type clefAnswer struct {
 	Confidence    float64            `json:"confidence"`
 }
 
+// clefResponse accepts answers wrapped in "result" (Cloudflare) or at the
+// top level (TypeSafe).
 type clefResponse struct {
-	Success bool `json:"success"`
+	Success bool                  `json:"success"`
+	Answers map[string]clefAnswer `json:"answers"`
 	Result  struct {
 		Answers map[string]clefAnswer `json:"answers"`
 	} `json:"result"`
@@ -76,17 +111,16 @@ type clefResponse struct {
 
 func (c *ClefJudge) Judge(ctx context.Context, call Call) (Verdict, error) {
 	start := time.Now()
-	account, token := os.Getenv(c.accountEnv), os.Getenv(c.tokenEnv)
-	if account == "" || token == "" {
-		return Verdict{}, fmt.Errorf("set %s and %s to use %s", c.accountEnv, c.tokenEnv, c.model)
+	if err := c.Available(); err != nil {
+		return Verdict{}, fmt.Errorf("%v to use %s", err, c.model)
 	}
+	token := os.Getenv(c.tokenEnv)
 	body, _ := json.Marshal(map[string]any{
-		"model":     c.model,
+		"model":     c.modelID,
 		"state":     map[string]any{"questions_version": judgeQuestionsVersion, "tool_call": BuildJudgePayload(call, c.excerpt)},
 		"questions": clefQuestions,
 	})
-	url := fmt.Sprintf("%s/accounts/%s/ai/run/@cf/cloudflare/%s", cloudflareAPIBase, account, c.model)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url(), bytes.NewReader(body))
 	if err != nil {
 		return Verdict{}, err
 	}
@@ -102,10 +136,17 @@ func (c *ClefJudge) Judge(ctx context.Context, call Call) (Verdict, error) {
 		return Verdict{}, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	var r clefResponse
-	if err := json.Unmarshal(raw, &r); err != nil || r.Result.Answers == nil {
+	if err := json.Unmarshal(raw, &r); err != nil {
 		return Verdict{}, fmt.Errorf("unexpected response from %s", c.model)
 	}
-	v := c.verdict(call, r.Result.Answers)
+	answers := r.Result.Answers
+	if answers == nil {
+		answers = r.Answers
+	}
+	if answers == nil {
+		return Verdict{}, fmt.Errorf("unexpected response from %s", c.model)
+	}
+	v := c.verdict(call, answers)
 	v.Latency = time.Since(start)
 	return v, nil
 }

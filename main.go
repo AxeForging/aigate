@@ -179,11 +179,41 @@ func main() {
 		{
 			Name:        "judge",
 			Usage:       "Claude Code hook: judge a tool call (reads the hook payload on stdin)",
-			Description: "Extra layer on top of the sandbox: it can deny or ask, never allow.\nConfigure under judge: in ~/.aigate/config.yaml (off by default).\n\nExamples:\n   aigate judge < payload.json             # as a PreToolUse/PostToolUse hook\n   aigate judge --dry-run < payload.json   # show what a model would receive; sends nothing",
+			Description: "Extra layer on top of the sandbox: it can deny or ask, never allow.\nConfigure under judge: in ~/.aigate/config.yaml (off by default).\n\nExamples:\n   aigate judge install                    # one-time: add the hooks to Claude Code, turn the judge on\n   aigate judge < payload.json             # as a PreToolUse/PostToolUse hook\n   aigate judge --dry-run < payload.json   # show what a model would receive; sends nothing",
 			Flags: []cli.Flag{
 				cli.BoolFlag{Name: "dry-run", Usage: "Print the exact payload a model judge would receive and the local verdict; send nothing"},
 			},
 			Action: judgeAction.Hook,
+			Subcommands: []cli.Command{
+				{
+					Name:   "install",
+					Usage:  "Add the judge hooks to Claude Code (identity active here, or ~/.claude) and turn the judge on",
+					Flags:  []cli.Flag{identityFlag},
+					Action: judgeAction.Install,
+				},
+				{
+					Name:  "eval",
+					Usage: "Score the rules, each available model and the chain on a labeled corpus",
+					Flags: []cli.Flag{
+						cli.StringFlag{Name: "corpus", Usage: "JSON array of cases (default: the built-in synthetic corpus)"},
+						cli.BoolFlag{Name: "json", Usage: "Machine-readable output"},
+					},
+					Action: judgeAction.Eval,
+				},
+				{
+					Name:      "allow-once",
+					Usage:     "Let one blocked call through (type it yourself, in your terminal)",
+					ArgsUsage: "ID",
+					Flags:     []cli.Flag{cli.StringFlag{Name: "reason", Usage: "Why (recorded in the audit log)"}},
+					Action:    judgeAction.AllowOnce,
+				},
+				{
+					Name:   "uninstall",
+					Usage:  "Remove exactly what install added (restores the file if unchanged since)",
+					Flags:  []cli.Flag{identityFlag},
+					Action: judgeAction.Uninstall,
+				},
+			},
 		},
 		{
 			Name:   "whoami",
@@ -196,7 +226,7 @@ func main() {
 			Aliases:     []string{"r"},
 			Usage:       "Run a command inside the AI sandbox (use -- before command)",
 			Description: "Examples:\n   aigate run -- claude\n   aigate run -- bash -c \"npm test\"\n   aigate run --allow-path ~/notes -- claude   # extra scope path, this session only\n   aigate run --identity work -- claude        # only work's logins are visible",
-			Flags:       []cli.Flag{verboseFlag, configFlag, allowPathFlag, identityFlag},
+			Flags:       []cli.Flag{verboseFlag, configFlag, allowPathFlag, identityFlag, judgeModeFlag},
 			Action:      runAction.Execute,
 		},
 		{
