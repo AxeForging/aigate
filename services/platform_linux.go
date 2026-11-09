@@ -442,9 +442,11 @@ func writeIPv4Rules(sb *strings.Builder, allowNetHosts []string) {
 // (e.g. iptables lacked permission): allow_net must never silently go
 // unenforced.
 func writeFirewallGuard(sb *strings.Builder, check string) {
-	msg := Block{What: "this run", Layer: LayerSandbox,
+	msg := Block{
+		What: "this run", Layer: LayerSandbox,
 		Reason: "the allow_net firewall could not be set up inside the sandbox",
-		Fix:    "run aigate doctor to see what's missing"}.String()
+		Fix:    "run aigate doctor to see what's missing",
+	}.String()
 	fmt.Fprintf(sb, "%s 2>/dev/null || { echo %s >&2; exit 126; }\n", check, shellQuote(msg))
 }
 
