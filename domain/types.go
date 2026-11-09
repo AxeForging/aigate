@@ -53,10 +53,42 @@ type Config struct {
 	AllowedPaths   []string       `yaml:"allowed_paths"`
 	ResourceLimits ResourceLimits `yaml:"resource_limits"`
 	MaskStdout     MaskStdout     `yaml:"mask_stdout"`
+
+	// Identities are only read from the global config; a project
+	// .aigate.yaml may not set them (a cloned repo must not pick one).
+	DefaultIdentity  string              `yaml:"default_identity,omitempty"`
+	Identities       map[string]Identity `yaml:"identities,omitempty"`
+	IdentityBindings map[string]string   `yaml:"identity_bindings,omitempty"`
+}
+
+// GitAuthor is the commit author/committer used inside an identity's sandbox.
+type GitAuthor struct {
+	Name  string `yaml:"name"`
+	Email string `yaml:"email"`
+}
+
+// Identity is one account set: Claude login, gh login, git author, ssh key.
+// Only its own dirs are mounted when a sandbox runs under it.
+type Identity struct {
+	ClaudeDir    string    `yaml:"claude_dir"`
+	GhDir        string    `yaml:"gh_dir"`
+	Git          GitAuthor `yaml:"git"`
+	SSHKey       string    `yaml:"ssh_key,omitempty"`
+	AllowedPaths []string  `yaml:"allowed_paths,omitempty"`
+	PassEnv      []string  `yaml:"pass_env,omitempty"`
+}
+
+// ResolvedIdentity is the identity selected for a run, with paths expanded
+// to absolute form and the reason it was chosen (shown to the user).
+type ResolvedIdentity struct {
+	Name   string
+	Reason string
+	Identity
 }
 
 // SandboxProfile is the fully resolved configuration used to launch a sandboxed process.
 type SandboxProfile struct {
-	Config  Config
-	WorkDir string
+	Config   Config
+	WorkDir  string
+	Identity *ResolvedIdentity // nil when no identity is active
 }

@@ -142,12 +142,3 @@ func TestBuildAgentOverrides_FailsClosedAndUnsets(t *testing.T) {
 		t.Errorf("script must unset agent env vars, got:\n%s", script)
 	}
 }
-
-func containsString(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
