@@ -245,8 +245,13 @@ func main() {
 		{
 			Name:        "doctor",
 			Usage:       "Check sandbox prerequisites and show active isolation mode",
-			Description: "Checks your config, OS accounts, and sandbox tooling, then prints a verdict\n(READY / DEGRADED / BLOCKED) with copy-pasteable next steps.\nExits non-zero when the sandbox cannot run, so scripts can gate on it.",
-			Action:      doctorAction.Execute,
+			Description: "Checks config, sandbox tooling, agent-socket hiding, identities and the judge,\nthen prints a verdict (READY / DEGRADED / BLOCKED) with copy-pasteable fixes.\nExits non-zero when blocked, so scripts can gate on it.\n\nExamples:\n   aigate doctor\n   aigate doctor --json      # for scripts\n   aigate doctor --report    # safe to paste in a public issue",
+			Flags: []cli.Flag{
+				cli.BoolFlag{Name: "json", Usage: "Machine-readable output (versioned schema)"},
+				cli.BoolFlag{Name: "report", Usage: "Plain text with home paths, user names and secrets removed, for bug reports"},
+				cli.BoolFlag{Name: "offline", Usage: "Don't contact judge model providers"},
+			},
+			Action: doctorAction.Execute,
 		},
 		{
 			Name:  "serve",

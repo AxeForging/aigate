@@ -1,12 +1,15 @@
 package actions
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 
+	"github.com/AxeForging/aigate/domain"
 	"github.com/AxeForging/aigate/services"
 	"github.com/urfave/cli"
 	"golang.org/x/term"
@@ -21,321 +24,207 @@ func NewDoctorAction(c *services.ConfigService, p services.Platform) *DoctorActi
 	return &DoctorAction{configSvc: c, platform: p}
 }
 
-// doctorReport accumulates check outcomes so the run can end with a single
-// verdict and a copy-pasteable list of next steps.
-type doctorReport struct {
-	nextSteps []string
-	blocked   bool // sandbox cannot run at all
-	degraded  bool // sandbox runs with reduced isolation
-}
-
-func (r *doctorReport) step(s string) {
-	if s == "" {
-		return
-	}
-	for _, existing := range r.nextSteps {
-		if existing == s {
-			return
-		}
-	}
-	r.nextSteps = append(r.nextSteps, s)
-}
-
 // useColor is true when stdout is a terminal and NO_COLOR is unset.
 var useColor = term.IsTerminal(int(os.Stdout.Fd())) && os.Getenv("NO_COLOR") == ""
 
-func colorize(code, s string) string {
-	if !useColor {
-		return s
-	}
-	return "\x1b[" + code + "m" + s + "\x1b[0m"
+var statusColor = map[string]string{
+	services.StatusOK: "32", services.StatusNote: "36", services.StatusWarn: "33", services.StatusFail: "31",
 }
 
-func okTag() string   { return colorize("32", "  ok  ") }
-func warnTag() string { return colorize("33", " WARN ") }
-func failTag() string { return colorize("31", " FAIL ") }
-
+// Execute runs every check, prints them (text, --json or --report) and exits
+// non-zero when the verdict is blocked.
 func (a *DoctorAction) Execute(c *cli.Context) error {
-	fmt.Printf("aigate doctor — environment checks (%s/%s)\n\n", runtime.GOOS, runtime.GOARCH)
-
-	report := &doctorReport{}
-
-	fmt.Println("Setup")
-	a.runSetupChecks(report)
-	fmt.Println()
-
-	fmt.Println("Tools")
-	switch runtime.GOOS {
-	case "linux":
-		runLinuxChecks(report)
-	case "darwin":
-		runDarwinChecks(report)
+	checks := a.collect(!c.Bool("offline"))
+	verdict := services.DoctorVerdict(checks)
+	switch {
+	case c.Bool("json"):
+		out, _ := json.MarshalIndent(map[string]any{
+			"version": services.DoctorSchemaVersion, "verdict": verdict,
+			"platform": runtime.GOOS + "/" + runtime.GOARCH, "checks": checks,
+		}, "", "  ")
+		fmt.Println(string(out))
+	case c.Bool("report"):
+		fmt.Print(services.RedactForReport(renderDoctor(checks, verdict, false)))
 	default:
-		fmt.Println("  No platform-specific checks for this OS.")
-		report.blocked = true
-		report.step("aigate sandboxing supports Linux and macOS only")
+		fmt.Print(renderDoctor(checks, verdict, useColor))
 	}
-
-	printVerdict(report)
-
-	if report.blocked {
+	if verdict == services.VerdictBlocked {
 		return cli.NewExitError("", 1)
 	}
 	return nil
 }
 
-// runSetupChecks verifies the one-time setup state: config file and the
-// sandbox OS group/user.
-func (a *DoctorAction) runSetupChecks(report *doctorReport) {
-	cfgPath, _ := a.configSvc.GlobalConfigPath()
-	cfg, err := a.configSvc.LoadGlobal()
-	if err != nil || cfg == nil {
-		fmt.Printf("%s %-16s not found\n", warnTag(), "config")
-		fmt.Printf("          Expected at %s\n", cfgPath)
-		report.degraded = true
-		report.step("aigate init                      # create the default config")
-		return
+func (a *DoctorAction) collect(online bool) []services.Check {
+	cfg, cfgErr := a.configSvc.LoadGlobal()
+	checks := a.setupChecks(cfg, cfgErr)
+	switch runtime.GOOS {
+	case "linux":
+		checks = append(checks, linuxChecks()...)
+	case "darwin":
+		checks = append(checks, darwinChecks()...)
+	default:
+		checks = append(checks, services.Check{ID: "os", Group: "Sandbox", Name: "operating system", Status: services.StatusFail,
+			Detail: runtime.GOOS + " is not supported; aigate sandboxes on Linux and macOS"})
 	}
+	if services.DoctorVerdict(checks) != services.VerdictBlocked {
+		checks = append(checks, a.socketCheck())
+	}
+	if cfgErr == nil {
+		checks = append(checks, services.IdentityChecks(cfg)...)
+		wd, _ := os.Getwd()
+		if settings, _, err := services.ClaudeSettingsFor(cfg, "", wd); err == nil {
+			checks = append(checks, services.JudgeChecks(cfg, settings, services.HasJudgeHook, online)...)
+		}
+	}
+	return checks
+}
 
+func (a *DoctorAction) setupChecks(cfg *domain.Config, err error) []services.Check {
+	path, _ := a.configSvc.GlobalConfigPath()
+	if err != nil || cfg == nil {
+		return []services.Check{{ID: "config", Group: "Setup", Name: "config", Status: services.StatusWarn,
+			Detail: "not found at " + services.TildePath(path), Fix: "aigate init"}}
+	}
 	scope := "scope OFF ($HOME fully accessible)"
 	if len(cfg.AllowedPaths) > 0 {
 		scope = fmt.Sprintf("%d allowed_paths (scope ON)", len(cfg.AllowedPaths))
 	}
-	fmt.Printf("%s %-16s %s\n", okTag(), "config", cfgPath)
-	fmt.Printf("          %d deny_read, %d deny_exec, %d allow_net, %s\n",
-		len(cfg.DenyRead), len(cfg.DenyExec), len(cfg.AllowNet), scope)
+	conf := services.Check{ID: "config", Group: "Setup", Name: "config", Status: services.StatusOK,
+		Detail: fmt.Sprintf("%s — %d deny_read, %d deny_exec, %d allow_net, %s", services.TildePath(path),
+			len(cfg.DenyRead), len(cfg.DenyExec), len(cfg.AllowNet), scope)}
 	if len(cfg.AllowedPaths) == 0 {
-		report.step("aigate allow path ~/.cache       # optional: turn on filesystem scope mode")
+		conf.Status, conf.Fix = services.StatusWarn, "aigate allow path ~/.cache   # turns on filesystem scope"
 	}
+	groupOK, _ := a.platform.GroupExists(cfg.Group)
+	userOK, _ := a.platform.UserExists(cfg.User)
+	acct := services.Check{ID: "os-accounts", Group: "Setup", Name: "os accounts", Status: services.StatusOK,
+		Detail: fmt.Sprintf("group %q and user %q exist", cfg.Group, cfg.User)}
+	if !groupOK || !userOK {
+		acct.Status, acct.Fix = services.StatusNote, "sudo aigate setup   # optional"
+		acct.Detail = "missing; only needed for on-disk ACL rules, sandboxing works without them"
+	}
+	return []services.Check{conf, acct}
+}
 
-	groupExists, _ := a.platform.GroupExists(cfg.Group)
-	userExists, _ := a.platform.UserExists(cfg.User)
-	if groupExists && userExists {
-		fmt.Printf("%s %-16s group %q and user %q exist\n", okTag(), "os accounts", cfg.Group, cfg.User)
-	} else {
-		fmt.Printf("%s %-16s group %q or user %q missing\n", warnTag(), "os accounts", cfg.Group, cfg.User)
-		fmt.Printf("          Only needed for persistent ACL rules; namespace sandboxing works without them.\n")
-		report.step("sudo aigate setup                # optional: create sandbox group/user for ACLs")
+// tool reports a binary on PATH; missing is the status when it isn't there.
+func tool(name, desc, missing, install string) services.Check {
+	c := services.Check{ID: name, Group: "Sandbox", Name: name, Status: services.StatusOK, Detail: desc}
+	if _, err := exec.LookPath(name); err != nil {
+		c.Status, c.Detail, c.Fix = missing, "not found — "+desc, install
+	}
+	return c
+}
+
+func linuxChecks() []services.Check {
+	checks := []services.Check{
+		tool("bwrap", "sandbox isolation (mount, pid, user namespaces)", services.StatusWarn,
+			"sudo dnf install bubblewrap   # or: sudo apt install bubblewrap"),
+		tool("slirp4netns", "network filtering for allow_net", services.StatusWarn,
+			"sudo dnf install slirp4netns   # or: sudo apt install slirp4netns"),
+		tool("ip6tables", "IPv6 egress filtering (optional; IPv4-only without it)", services.StatusNote,
+			"sudo dnf install iptables   # or: sudo apt install iptables"),
+		tool("setfacl", "on-disk ACLs between sessions (optional)", services.StatusNote,
+			"sudo dnf install acl   # or: sudo apt install acl"),
+	}
+	userns := services.Check{ID: "userns", Group: "Sandbox", Name: "user namespaces", Status: services.StatusOK, Detail: "enabled"}
+	if exec.Command("unshare", "--user", "--", "true").Run() != nil {
+		userns.Status, userns.Detail = services.StatusFail, "disabled; every sandbox mode needs them"
+		userns.Fix = "echo 1 | sudo tee /proc/sys/kernel/unprivileged_userns_clone"
+	}
+	checks = append(checks, userns)
+	if userns.Status == services.StatusOK && checks[0].Status == services.StatusOK {
+		aa := services.Check{ID: "apparmor-userns", Group: "Sandbox", Name: "apparmor userns", Status: services.StatusOK,
+			Detail: "bwrap can create its namespaces"}
+		if p := services.DetectUsernsProblem(); p != nil {
+			aa.Status, aa.Detail, aa.Fix = services.StatusFail, p.Reason, strings.TrimSpace(p.Fix)
+		}
+		checks = append(checks, aa)
+	}
+	return checks
+}
+
+func darwinChecks() []services.Check {
+	return []services.Check{
+		tool("sandbox-exec", "macOS Seatbelt sandbox", services.StatusFail, "built into macOS; reinstall the command line tools"),
+		{ID: "macos-keychain", Group: "Identities", Name: "claude logins (macOS)", Status: services.StatusNote,
+			Detail: "files, gh login, git author and ssh key are isolated per identity; Claude logins live in the Keychain, which a sandboxed process can still ask for. Use separate macOS users if that matters."},
 	}
 }
 
-// printVerdict prints the final one-line verdict plus collected next steps.
-func printVerdict(report *doctorReport) {
-	fmt.Println()
+// socketCheck runs a real sandbox and checks that agent sockets and their env
+// vars are gone inside (ssh-agent, session bus, keyrings).
+func (a *DoctorAction) socketCheck() services.Check {
+	c := services.Check{ID: "agent-sockets", Group: "Sandbox", Name: "agent sockets", Status: services.StatusOK,
+		Detail: "ssh-agent, session bus and keyring sockets hidden inside the sandbox (tested)"}
+	script := `ls -A "/run/user/$(id -u)" 2>/dev/null; printf '%s%s' "${SSH_AUTH_SOCK:-}" "${DBUS_SESSION_BUS_ADDRESS:-}"`
+	if runtime.GOOS == "darwin" {
+		script = `printf '%s' "${SSH_AUTH_SOCK:-}"`
+	}
+	wd, err := os.MkdirTemp("", "aigate-doctor-")
+	if err != nil {
+		c.Status, c.Detail = services.StatusWarn, "could not create a test folder: "+err.Error()
+		return c
+	}
+	defer func() { _ = os.RemoveAll(wd) }()
+	var out bytes.Buffer
+	err = a.platform.RunSandboxed(domain.SandboxProfile{WorkDir: wd}, "sh", []string{"-c", script}, &out, &out)
 	switch {
-	case report.blocked:
-		fmt.Printf("Verdict: %s — the sandbox cannot run on this host.\n", colorize("31;1", "BLOCKED"))
-	case report.degraded:
-		fmt.Printf("Verdict: %s — the sandbox runs, but with reduced isolation or setup pending.\n", colorize("33;1", "DEGRADED"))
+	case err != nil:
+		c.Status, c.Detail = services.StatusWarn, "could not start a test sandbox: "+err.Error()
+		c.Fix = "aigate run -- true   # shows the full error"
+	case strings.TrimSpace(out.String()) != "":
+		c.Status, c.Detail = services.StatusFail, "visible inside the sandbox: "+strings.TrimSpace(out.String())
+		c.Fix = "update aigate; report it with the output of: aigate doctor --report"
+	}
+	return c
+}
+
+// renderDoctor prints checks by group, one verdict line, then the fixes.
+func renderDoctor(checks []services.Check, verdict string, color bool) string {
+	paint := func(code, s string) string {
+		if !color {
+			return s
+		}
+		return "\x1b[" + code + "m" + s + "\x1b[0m"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "aigate doctor — %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	group := ""
+	var fixes []string
+	for _, c := range checks {
+		if c.Group != group {
+			group = c.Group
+			fmt.Fprintf(&b, "\n%s\n", group)
+		}
+		fmt.Fprintf(&b, "%s %-22s %s\n", paint(statusColor[c.Status], fmt.Sprintf(" %-4s ", strings.ToUpper(c.Status))), c.Name, c.Detail)
+		if c.Fix == "" || c.Status == services.StatusOK {
+			continue
+		}
+		for i, line := range strings.Split(c.Fix, "\n") {
+			label := "fix:"
+			if i > 0 {
+				label = "    "
+			}
+			fmt.Fprintf(&b, "%29s %s %s\n", "", label, line)
+		}
+		if c.Status != services.StatusNote && !strings.Contains(c.Fix, "\n") {
+			fixes = append(fixes, c.Fix)
+		}
+	}
+	b.WriteString("\n")
+	switch verdict {
+	case services.VerdictBlocked:
+		fmt.Fprintf(&b, "Verdict: %s — aigate can't run safely here; fix the FAIL lines above.\n", paint("31;1", "BLOCKED"))
+	case services.VerdictDegraded:
+		fmt.Fprintf(&b, "Verdict: %s — aigate runs, with less protection until the WARN lines are fixed.\n", paint("33;1", "DEGRADED"))
 	default:
-		fmt.Printf("Verdict: %s — full isolation available. Try: aigate run -- claude\n", colorize("32;1", "READY"))
+		fmt.Fprintf(&b, "Verdict: %s — full isolation available. Try: aigate run -- claude\n", paint("32;1", "READY"))
 	}
-	if len(report.nextSteps) > 0 {
-		fmt.Println("\nNext steps:")
-		for _, s := range report.nextSteps {
-			fmt.Printf("  %s\n", s)
+	if len(fixes) > 0 {
+		b.WriteString("\nNext steps:\n")
+		for _, f := range fixes {
+			fmt.Fprintf(&b, "  %s\n", f)
 		}
 	}
-}
-
-// ── Linux ────────────────────────────────────────────────────────────────────
-
-func runLinuxChecks(report *doctorReport) {
-	bwrapOK := printCheck(report,
-		"bwrap",
-		"sandbox isolation (mount / pid / user namespaces)",
-		"sudo dnf install bubblewrap   OR   sudo apt install bubblewrap")
-
-	slirpOK := printCheck(report,
-		"slirp4netns",
-		"network filtering — required for allow_net rules",
-		"sudo dnf install slirp4netns   OR   sudo apt install slirp4netns")
-
-	printCheck(report,
-		"ip6tables",
-		"IPv6 egress filtering — optional; when missing, sandbox runs IPv4-only",
-		"sudo dnf install iptables   OR   sudo apt install iptables")
-
-	printCheck(report,
-		"setfacl",
-		"persistent ACLs — deny_read enforced on disk between sessions",
-		"sudo dnf install acl   OR   sudo apt install acl")
-
-	unshareOK := checkUserNamespaces(report)
-	if unshareOK && bwrapOK {
-		unshareOK = checkAppArmorUserns(report)
-	}
-
-	fmt.Println()
-	printLinuxIsolationMode(bwrapOK, slirpOK, unshareOK)
-
-	switch {
-	case !unshareOK:
-		report.blocked = true
-	case !bwrapOK || !slirpOK:
-		report.degraded = true
-	}
-}
-
-// printCheck looks up tool by name, prints a status line, and returns true if
-// found. installHint is printed (and queued as a next step) when missing.
-func printCheck(report *doctorReport, name, desc, installHint string) bool {
-	path, err := exec.LookPath(name)
-	if err != nil {
-		fmt.Printf("%s %-16s not found\n", warnTag(), name)
-		fmt.Printf("          %s\n", desc)
-		if installHint != "" {
-			fmt.Printf("          Install: %s\n", installHint)
-			report.step(installHint)
-		}
-		return false
-	}
-
-	ver := toolVersion(name)
-	if ver != "" {
-		fmt.Printf("%s %-16s %s (%s)\n", okTag(), name, ver, path)
-	} else {
-		fmt.Printf("%s %-16s %s\n", okTag(), name, path)
-	}
-	fmt.Printf("          %s\n", desc)
-	return true
-}
-
-// toolVersion runs `name --version` and returns the first meaningful token.
-func toolVersion(name string) string {
-	out, err := exec.Command(name, "--version").CombinedOutput() //nolint:gosec
-	if err != nil {
-		return ""
-	}
-	line := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
-	// Keep only the version token (e.g. "bubblewrap 0.10.0" → "v0.10.0")
-	parts := strings.Fields(line)
-	for _, p := range parts {
-		if len(p) > 0 && (p[0] >= '0' && p[0] <= '9') {
-			return "v" + p
-		}
-	}
-	return ""
-}
-
-// ip6tablesAvailable mirrors the runtime check used by the sandbox: kernel v6
-// must be enabled AND ip6tables must be on PATH. Either missing → v4-only.
-func ip6tablesAvailable() bool {
-	if _, err := exec.LookPath("ip6tables"); err != nil {
-		return false
-	}
-	// Match the services-layer check; if v6 is disabled at the kernel, ip6tables
-	// in the namespace will fail and we'd be running unfiltered v6 — refuse it.
-	data, err := os.ReadFile("/proc/sys/net/ipv6/conf/all/disable_ipv6")
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(string(data)) == "0"
-}
-
-// checkUserNamespaces verifies that unprivileged user namespaces are enabled.
-func checkUserNamespaces(report *doctorReport) bool {
-	// Attempt a trivial unshare; if it fails the kernel has them disabled.
-	err := exec.Command("unshare", "--user", "--", "true").Run()
-	if err != nil {
-		fmt.Printf("%s %-16s disabled\n", failTag(), "user namespaces")
-		fmt.Printf("          Required for all sandbox modes.\n")
-		fmt.Printf("          Enable: echo 1 | sudo tee /proc/sys/kernel/unprivileged_userns_clone\n")
-		report.step("echo 1 | sudo tee /proc/sys/kernel/unprivileged_userns_clone")
-		return false
-	}
-	fmt.Printf("%s %-16s enabled\n", okTag(), "user namespaces")
-	fmt.Printf("          Required for all sandbox modes.\n")
-	return true
-}
-
-// checkAppArmorUserns catches Ubuntu's AppArmor restriction, which lets
-// `unshare --user` pass while blocking bwrap.
-func checkAppArmorUserns(report *doctorReport) bool {
-	problem := services.DetectUsernsProblem()
-	if problem == nil {
-		fmt.Printf("%s %-16s bwrap can create its namespaces\n", okTag(), "apparmor userns")
-		return true
-	}
-	fmt.Printf("%s %-16s blocking bwrap\n", failTag(), "apparmor userns")
-	for _, line := range strings.Split(problem.Error(), "\n") {
-		fmt.Printf("          %s\n", line)
-	}
-	report.step("allow bwrap in AppArmor (see the apparmor userns check above)")
-	return false
-}
-
-// printLinuxIsolationMode describes which sandbox path will be taken based on
-// available tools, mirroring the dispatch logic in RunSandboxed.
-func printLinuxIsolationMode(bwrap, slirp, unshare bool) {
-	fmt.Println("Isolation mode:")
-
-	switch {
-	case bwrap && slirp:
-		fmt.Println("  bwrap + slirp4netns  (full isolation)")
-		fmt.Println()
-		fmt.Println("  deny_read      bwrap bind mounts           kernel-enforced, per-run")
-		fmt.Println("  deny_exec      bwrap bind mounts           kernel-enforced, per-run")
-		fmt.Println("  allowed_paths  bwrap tmpfs over $HOME      non-scoped files hidden, kernel-enforced")
-		fmt.Println("  allow_net      bwrap --unshare-net         network namespace via bwrap")
-		fmt.Println("                 slirp4netns + iptables      egress filtered to allowed hosts")
-		if ip6tablesAvailable() {
-			fmt.Println("                 + ip6tables                 IPv6 egress filtered in parallel")
-		} else {
-			fmt.Println("                 IPv4-only                   install ip6tables to enable v6 filtering")
-		}
-		fmt.Println("  config dir     bwrap tmpfs overlay         ~/.aigate hidden from agent")
-	case bwrap && !slirp:
-		fmt.Println("  bwrap  (no network filtering — slirp4netns missing)")
-		fmt.Println()
-		fmt.Println("  deny_read      bwrap bind mounts           kernel-enforced, per-run")
-		fmt.Println("  deny_exec      bwrap bind mounts           kernel-enforced, per-run")
-		fmt.Println("  allowed_paths  bwrap tmpfs over $HOME      non-scoped files hidden, kernel-enforced")
-		fmt.Println("  allow_net      INACTIVE                    install slirp4netns to enable")
-		fmt.Println("  config dir     bwrap tmpfs overlay         ~/.aigate hidden from agent")
-	case !bwrap && slirp && unshare:
-		fmt.Println("  unshare + slirp4netns  (fallback — install bwrap for stronger isolation)")
-		fmt.Println()
-		fmt.Println("  deny_read      mount namespace overrides   shell-script-based")
-		fmt.Println("  deny_exec      mount namespace overrides   shell-script-based")
-		fmt.Println("  allowed_paths  tmpfs over $HOME            non-scoped files hidden")
-		fmt.Println("  allow_net      unshare --net + slirp4netns egress filtered to allowed hosts")
-		fmt.Println("  config dir     tmpfs mount                 ~/.aigate hidden from agent")
-	case !bwrap && !slirp && unshare:
-		fmt.Println("  unshare  (fallback — install bwrap for stronger isolation)")
-		fmt.Println()
-		fmt.Println("  deny_read      mount namespace overrides   shell-script-based")
-		fmt.Println("  deny_exec      mount namespace overrides   shell-script-based")
-		fmt.Println("  allowed_paths  tmpfs over $HOME            non-scoped files hidden")
-		fmt.Println("  allow_net      INACTIVE                    install slirp4netns to enable")
-		fmt.Println("  config dir     tmpfs mount                 ~/.aigate hidden from agent")
-	default:
-		fmt.Println("  NONE — user namespaces are disabled; sandbox cannot run")
-	}
-}
-
-// ── macOS ────────────────────────────────────────────────────────────────────
-
-func runDarwinChecks(report *doctorReport) {
-	sbOK := printCheck(report,
-		"sandbox-exec",
-		"macOS Seatbelt sandbox (deny_read, deny_exec, allow_net, allowed_paths)",
-		"Built into macOS — should always be present")
-	if !sbOK {
-		report.blocked = true
-	}
-
-	fmt.Println()
-	fmt.Println("Isolation mode: sandbox-exec (Seatbelt)")
-	fmt.Println()
-	fmt.Println("  deny_read      Seatbelt file-read* deny rules   kernel-enforced")
-	fmt.Println("  deny_exec      Seatbelt process-exec deny       kernel-enforced")
-	fmt.Println("  allowed_paths  Seatbelt read+write deny on $HOME with scope allows")
-	fmt.Println("  allow_net      Seatbelt network-outbound rules  kernel-enforced")
-	fmt.Println()
-	fmt.Println("Identities on macOS:")
-	fmt.Println("  isolated       files, gh login, git author, ssh key (Seatbelt hides other identities)")
-	fmt.Println("  NOT isolated   Claude logins: Claude Code keeps one Keychain item per identity, but")
-	fmt.Println("                 the Keychain doesn't stop a sandboxed process from asking for another")
-	fmt.Println("                 identity's item. Use separate macOS users if that matters to you.")
+	return b.String()
 }

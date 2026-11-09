@@ -91,16 +91,6 @@ func (a *JudgeAction) installTarget(c *cli.Context) (*domain.Config, string, str
 		return nil, "", "", fmt.Errorf("aigate isn't set up yet. Run: aigate init")
 	}
 	wd, _ := os.Getwd()
-	id, err := services.NewIdentityService().Resolve(cfg, c.String("identity"), wd)
-	if err != nil {
-		return nil, "", "", err
-	}
-	if id != nil {
-		return cfg, filepath.Join(id.ClaudeDir, "settings.json"), "identity " + id.Name, nil
-	}
-	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
-		return cfg, filepath.Join(dir, "settings.json"), "CLAUDE_CONFIG_DIR", nil
-	}
-	home, _ := os.UserHomeDir()
-	return cfg, filepath.Join(home, ".claude", "settings.json"), "default Claude config", nil
+	path, who, err := services.ClaudeSettingsFor(cfg, c.String("identity"), wd)
+	return cfg, path, who, err
 }
