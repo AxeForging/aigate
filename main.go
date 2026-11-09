@@ -40,6 +40,7 @@ func main() {
 	resetAction := actions.NewResetAction(platform, configSvc)
 	identityAction := actions.NewIdentityAction(configSvc, runnerSvc)
 	whoamiAction := actions.NewWhoamiAction(configSvc)
+	judgeAction := actions.NewJudgeAction(configSvc)
 
 	app := cli.NewApp()
 	app.Name = "aigate"
@@ -174,6 +175,15 @@ func main() {
 					Action:    identityAction.Remove,
 				},
 			},
+		},
+		{
+			Name:        "judge",
+			Usage:       "Claude Code hook: judge a tool call (reads the hook payload on stdin)",
+			Description: "Extra layer on top of the sandbox: it can deny or ask, never allow.\nConfigure under judge: in ~/.aigate/config.yaml (off by default).\n\nExamples:\n   aigate judge < payload.json             # as a PreToolUse/PostToolUse hook\n   aigate judge --dry-run < payload.json   # show what a model would receive; sends nothing",
+			Flags: []cli.Flag{
+				cli.BoolFlag{Name: "dry-run", Usage: "Print the exact payload a model judge would receive and the local verdict; send nothing"},
+			},
+			Action: judgeAction.Hook,
 		},
 		{
 			Name:   "whoami",
