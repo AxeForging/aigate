@@ -77,6 +77,20 @@ IDENTITIES (several accounts on one machine)
   your work logins); bind folders with 'aigate identity use' instead.
   Inside the sandbox: $AIGATE_IDENTITY names the active identity.
 
+JUDGE (optional; Claude Code hooks)
+  An extra check on tool calls: local rules, then Clef/Jev models. It can only
+  deny or ask, never allow; the sandbox stays the boundary.
+
+  aigate judge install                     # Add hooks to Claude Code, turn the judge on
+  aigate judge uninstall                   # Remove exactly what install added
+  aigate judge --dry-run < payload.json    # What a model would receive (masked); sends nothing
+  aigate judge eval                        # Precision/recall/latency of rules, models, chain
+  aigate judge allow-once ID               # Let one blocked call through (human, in a terminal)
+  aigate run --judge=off -- claude         # One session without the judge (audited)
+
+  If a call is denied by the judge, don't retry it in another form: ask the
+  user, who can allow it once.
+
 RUNNING SANDBOXED
   aigate run -- claude                     # Run Claude in sandbox
   aigate run -- aider                      # Run any AI tool
