@@ -167,7 +167,37 @@ func TestBuildJudgeChain_SkipsModelsWithoutCredentials(t *testing.T) {
 	}
 	s := DefaultJudgeSettings()
 	s.Chain = []string{JudgeRules, JudgeJev}
-	if c := BuildJudgeChain(s); len(c.Skipped) != 1 || !strings.Contains(c.Skipped[0], "jev: not available yet") {
-		t.Errorf("unregistered adapters must be listed as skipped: %+v", c.Skipped)
+	t.Setenv("AIGATE_JEV_TOKEN", "")
+	if c := BuildJudgeChain(s); len(c.Skipped) != 1 || !strings.Contains(c.Skipped[0], "jev: set AIGATE_JEV_TOKEN") {
+		t.Errorf("jev without its token must be skipped with the variable named: %+v", c.Skipped)
+	}
+}
+
+func TestJevJudge_TopLevelAnswersAndOwnEndpoint(t *testing.T) {
+	var gotPath, gotAuth, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotPath, gotAuth, gotBody = r.URL.Path, r.Header.Get("Authorization"), string(b)
+		_, _ = io.WriteString(w, `{"answers":`+answers(0.97, 0.1, "deny", 0.88)+`}`)
+	}))
+	defer srv.Close()
+	old := jevAPIBase
+	jevAPIBase = srv.URL
+	defer func() { jevAPIBase = old }()
+	t.Setenv("AIGATE_JEV_TOKEN", "jev-canary-for-tests")
+
+	s := DefaultJudgeSettings()
+	s.Chain = []string{JudgeRules, JudgeJev}
+	c := BuildJudgeChain(s)
+	if len(c.Models) != 1 || c.Models[0].Name() != JudgeJev {
+		t.Fatalf("jev should be in the chain when its token is set: %+v", c)
+	}
+	v, err := c.Models[0].Judge(context.Background(), Call{Event: EventPreTool, Tool: "Bash", Target: "rm -rf ~/"})
+	if err != nil || v.Outcome != Deny || v.Judge != JudgeJev {
+		t.Fatalf("got %+v err=%v", v, err)
+	}
+	if gotPath != "/v1/systemone" || gotAuth != "Bearer jev-canary-for-tests" ||
+		!strings.Contains(gotBody, `"model":"jev-latest"`) || strings.Contains(gotBody, "jev-canary-for-tests") {
+		t.Errorf("request wrong: path=%q auth=%q body=%s", gotPath, gotAuth, gotBody)
 	}
 }
