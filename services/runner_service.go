@@ -1,7 +1,6 @@
 package services
 
 import (
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -38,7 +37,7 @@ func (s *RunnerService) Run(profile domain.SandboxProfile, cmd string, args []st
 				for _, arg := range args {
 					if arg == parts[1] {
 						if s.audit != nil {
-							s.audit.LogBlocked(profile, cmd, args, "deny_exec", "preflight", fmt.Sprintf("%q with subcommand %q is in the deny_exec list", cmd, parts[1]))
+							s.audit.LogBlocked(profile, cmd, args, "deny_exec", "preflight", DenyExecBlock(denied).Reason)
 						}
 						return blockedErr{DenyExecBlock(denied)}
 					}
@@ -48,7 +47,7 @@ func (s *RunnerService) Run(profile domain.SandboxProfile, cmd string, args []st
 			// Full command rule: block all usage
 			if denied == baseName || denied == cmd {
 				if s.audit != nil {
-					s.audit.LogBlocked(profile, cmd, args, "deny_exec", "preflight", fmt.Sprintf("%q is in the deny_exec list", cmd))
+					s.audit.LogBlocked(profile, cmd, args, "deny_exec", "preflight", DenyExecBlock(denied).Reason)
 				}
 				return blockedErr{DenyExecBlock(denied)}
 			}

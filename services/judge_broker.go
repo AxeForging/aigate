@@ -98,6 +98,9 @@ func (b *JudgeBroker) record(call Call, v Verdict, cwd string) {
 		"event":      call.Event,
 		"latency_ms": strconv.FormatInt(v.Latency.Milliseconds(), 10),
 	}
+	if call.Event == EventPreTool {
+		meta["call_id"] = CallID(call) // links a denial to a later allow-once
+	}
 	if v.Confidence > 0 {
 		meta["confidence"] = strconv.FormatFloat(v.Confidence, 'f', 3, 64)
 	}

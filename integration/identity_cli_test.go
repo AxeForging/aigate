@@ -211,3 +211,15 @@ func TestHelp_DocumentsIdentityCommands(t *testing.T) {
 	out, _ = aigateIn(t, bin, home, home, "run", "--help")
 	mustContain(t, out, "--identity", "aigate run --identity work -- claude")
 }
+
+func TestHelp_DocumentsDoctorExplainAndBlocks(t *testing.T) {
+	bin := buildBinary(t)
+	home := t.TempDir()
+	out, _ := aigateIn(t, bin, home, home, "help-ai")
+	mustContain(t, out, "aigate doctor --json | --report", "aigate explain ~/.ssh/id_ed25519",
+		"[aigate] blocked <what> — <layer>: <reason>. To allow: <command>", "judge_override")
+	out, _ = aigateIn(t, bin, home, home, "explain", "--help")
+	mustContain(t, out, "Runs nothing", "aigate explain -- curl https://example.com", "--judge")
+	out, _ = aigateIn(t, bin, home, home, "doctor", "--help")
+	mustContain(t, out, "--json", "--report", "--offline")
+}

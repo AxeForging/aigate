@@ -994,3 +994,26 @@ button.is-syncing {
 @media (max-width: 980px) {
   .decision-row { grid-template-columns: 1fr; }
 }
+
+.score-caption {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.overridden {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.8em;
+}
+
+@media (max-width: 560px) {
+  .copy-btn,
+  .identity-card details summary {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+}
