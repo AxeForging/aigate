@@ -100,6 +100,9 @@ func sessionEnv(profile domain.SandboxProfile, sockInside string) (set []EnvVar,
 	if profile.JudgeSocket != "" {
 		set = append(set, EnvVar{"AIGATE_JUDGE_SOCK", sockInside})
 	}
+	if profile.JudgeOff {
+		set = append(set, EnvVar{"AIGATE_JUDGE", "off"})
+	}
 	unset = append(unset, profile.UnsetEnv...)
 	return set, unset
 }

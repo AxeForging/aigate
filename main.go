@@ -192,6 +192,13 @@ func main() {
 					Action: judgeAction.Install,
 				},
 				{
+					Name:      "allow-once",
+					Usage:     "Let one blocked call through (type it yourself, in your terminal)",
+					ArgsUsage: "ID",
+					Flags:     []cli.Flag{cli.StringFlag{Name: "reason", Usage: "Why (recorded in the audit log)"}},
+					Action:    judgeAction.AllowOnce,
+				},
+				{
 					Name:   "uninstall",
 					Usage:  "Remove exactly what install added (restores the file if unchanged since)",
 					Flags:  []cli.Flag{identityFlag},
@@ -210,7 +217,7 @@ func main() {
 			Aliases:     []string{"r"},
 			Usage:       "Run a command inside the AI sandbox (use -- before command)",
 			Description: "Examples:\n   aigate run -- claude\n   aigate run -- bash -c \"npm test\"\n   aigate run --allow-path ~/notes -- claude   # extra scope path, this session only\n   aigate run --identity work -- claude        # only work's logins are visible",
-			Flags:       []cli.Flag{verboseFlag, configFlag, allowPathFlag, identityFlag},
+			Flags:       []cli.Flag{verboseFlag, configFlag, allowPathFlag, identityFlag, judgeModeFlag},
 			Action:      runAction.Execute,
 		},
 		{

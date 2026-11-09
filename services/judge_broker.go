@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/user"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,12 +23,12 @@ const maxHookPayload = 8 << 20
 // into the sandbox, so hooks running inside never see the config, provider
 // credentials or audit log; outside a sandbox the hook uses it in-process.
 type JudgeBroker struct {
-	Chain      *Chain
-	Audit      *AuditService // nil: no audit
-	Profile    domain.SandboxProfile
-	HowToAllow string
-	Warn       io.Writer // fallback warnings; nil: none
-	WarnOnce   bool      // only the first fallback (long sessions)
+	Chain     *Chain
+	Audit     *AuditService // nil: no audit
+	Profile   domain.SandboxProfile
+	AllowOnce *AllowOnceStore // nil: no allow-once grants
+	Warn      io.Writer       // fallback warnings; nil: none
+	WarnOnce  bool            // only the first fallback (long sessions)
 
 	warnMu sync.Mutex
 	warned bool
@@ -44,9 +45,15 @@ func (b *JudgeBroker) Handle(raw []byte) []byte {
 		return nil
 	}
 	v := b.Chain.Decide(context.Background(), call)
+	if call.Event == EventPreTool && v.Outcome != NoObjection && b.AllowOnce != nil {
+		if reason, ok := b.AllowOnce.Consume(CallID(call)); ok {
+			b.override(call, v, in.Cwd, "allowed once by the user: "+orNone(reason))
+			return nil
+		}
+	}
 	b.record(call, v, in.Cwd)
 	b.warn(v)
-	return HookOutput(call, v, b.HowToAllow)
+	return HookOutput(call, v, JudgeFix(call))
 }
 
 func (b *JudgeBroker) warn(v Verdict) {
@@ -157,6 +164,42 @@ func AskJudgeBroker(path string, raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	return io.ReadAll(io.LimitReader(conn, 1<<20))
+}
+
+// JudgeFix is the "to allow" line of a judge block: an allow-once for this
+// exact call (only usable by a human in their own terminal) or a session
+// without the judge.
+func JudgeFix(call Call) string {
+	return fmt.Sprintf("in your own terminal run `aigate judge allow-once %s`, or start the session with `aigate run --judge=off` (the sandbox still applies)", CallID(call))
+}
+
+// override audits a call the user let through despite the judge.
+func (b *JudgeBroker) override(call Call, v Verdict, cwd, detail string) {
+	if b.Audit == nil {
+		return
+	}
+	profile := b.Profile
+	if profile.WorkDir == "" {
+		profile.WorkDir = cwd
+	}
+	_ = b.Audit.Log(AuditEvent{Kind: "judge_override", Identity: identityName(profile), WorkDir: profile.WorkDir,
+		Rule: v.Judge, Command: oneLine(maskSecrets(strings.TrimSpace(call.Tool+" "+call.Target)), 200), Detail: detail,
+		Meta: map[string]string{"outcome": v.Outcome.String(), "os_user": OSUser(), "call_id": CallID(call)}})
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "no reason given"
+	}
+	return s
+}
+
+// OSUser is the login name for audit records.
+func OSUser() string {
+	if u, err := user.Current(); err == nil {
+		return u.Username
+	}
+	return os.Getenv("USER")
 }
 
 // JudgeCredentialEnv lists the provider credential variables a config names;

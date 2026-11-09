@@ -24,7 +24,7 @@ func serveTestBroker(t *testing.T, chain *Chain) (sock, home string) {
 	home = t.TempDir()
 	t.Setenv("HOME", home)
 	sock = filepath.Join(t.TempDir(), "j.sock")
-	b := &JudgeBroker{Chain: chain, Audit: NewAuditService(nil), HowToAllow: "fix",
+	b := &JudgeBroker{Chain: chain, Audit: NewAuditService(nil),
 		Profile: domain.SandboxProfile{WorkDir: "/work", Identity: &domain.ResolvedIdentity{Name: "work"}}}
 	stop, err := ServeJudgeBroker(sock, b)
 	if err != nil {

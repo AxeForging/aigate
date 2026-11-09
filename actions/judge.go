@@ -15,9 +15,6 @@ import (
 	"github.com/urfave/cli"
 )
 
-// judgeHowToAllow is shown with every judge block.
-const judgeHowToAllow = "aigate judge uninstall, or set judge.enabled: false in ~/.aigate/config.yaml (the sandbox still applies)"
-
 type JudgeAction struct {
 	configSvc *services.ConfigService
 	stdin     io.Reader
@@ -42,7 +39,7 @@ func (a *JudgeAction) Hook(c *cli.Context) error {
 		return a.warn("hook input is not JSON (%v); expected a Claude Code PreToolUse/PostToolUse payload", err)
 	}
 	call, ok := services.CallFromHook(in)
-	if !ok {
+	if !ok || (os.Getenv("AIGATE_JUDGE") == "off" && !c.Bool("dry-run")) {
 		return nil
 	}
 	if sock := os.Getenv("AIGATE_JUDGE_SOCK"); sock != "" && !c.Bool("dry-run") {
@@ -64,7 +61,7 @@ func (a *JudgeAction) Hook(c *cli.Context) error {
 		return nil
 	}
 	broker := &services.JudgeBroker{Chain: services.BuildJudgeChain(settings),
-		Audit: services.NewAuditService(a.configSvc), HowToAllow: judgeHowToAllow, Warn: a.stderr}
+		Audit: services.NewAuditService(a.configSvc), AllowOnce: allowOnceStore(a.configSvc), Warn: a.stderr}
 	a.emit(broker.Handle(raw))
 	return nil
 }
@@ -88,7 +85,7 @@ func (a *JudgeAction) viaBroker(sock string, raw []byte) error {
 		return nil
 	}
 	v, _ := services.RulesJudge{}.Judge(context.Background(), call)
-	a.emit(services.HookOutput(call, v, judgeHowToAllow))
+	a.emit(services.HookOutput(call, v, services.JudgeFix(call)))
 	return nil
 }
 
@@ -117,7 +114,7 @@ func startJudgeBroker(configSvc *services.ConfigService, global *domain.Config, 
 	sock := filepath.Join(dir, "judge.sock")
 	chain := services.BuildJudgeChain(settings)
 	broker := &services.JudgeBroker{Chain: chain,
-		Audit: services.NewAuditService(configSvc), Profile: *profile, HowToAllow: judgeHowToAllow,
+		Audit: services.NewAuditService(configSvc), Profile: *profile, AllowOnce: allowOnceStore(configSvc),
 		Warn: os.Stderr, WarnOnce: true}
 	stopServe, err := services.ServeJudgeBroker(sock, broker)
 	if err != nil {
