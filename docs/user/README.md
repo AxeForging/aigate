@@ -657,7 +657,7 @@ Two layers working together for defense-in-depth:
 
 On Linux every session gets its own network namespace (needs `slirp4netns`). The agent reaches the internet, but not services bound to your machine's `127.0.0.1` or abstract unix sockets such as X11. `allow_net` adds a firewall on top: only the listed hosts are reachable.
 
-The firewall and mounts are set up with privileges that the agent's command never gets: the last setup step drops every capability (`no_new_privs`, empty capability sets) before starting it, so the agent can't flush the firewall or unmount a hidden file.
+The agent's command never holds a privilege: with bwrap, aigate sets up the sandbox's network from outside (it enters the namespace with `nsenter` and loads the firewall with `iptables-restore`) while bwrap holds the command back, then lets it start as your normal user with no capabilities. The agent can't flush the firewall or unmount a hidden file. If the firewall can't be installed, the session doesn't start. `aigate doctor` tests this. In the `unshare` fallback, setup runs inside and its last step drops every capability before the command starts.
 
 **Opening a dev server the agent starts.** Publish its port:
 
@@ -669,7 +669,7 @@ Repeat `--port` for more. Servers that listen only on localhost inside the sandb
 
 How each platform does it:
 
-- **Linux (bwrap path)**: bwrap creates a network namespace via `--unshare-net`. Go reads bwrap's `--info-fd` to get the child PID, then launches `slirp4netns --disable-host-loopback --configure` from host-side to attach user-mode networking. Inside the sandbox, `iptables` OUTPUT rules resolve each `allow_net` hostname and restrict egress. When `ip6tables` is available and the kernel has IPv6 enabled, slirp4netns is launched with `--enable-ipv6` and a parallel `ip6tables` filter is installed. No root needed.
+- **Linux (bwrap path)**: bwrap creates a network namespace via `--unshare-net`. Go reads bwrap's `--info-fd` to get the child PID, then launches `slirp4netns --disable-host-loopback --configure` from host-side to attach user-mode networking. aigate resolves each `allow_net` host and installs `iptables` OUTPUT rules in the sandbox's namespace (DNS only to slirp's forwarder, then the listed addresses, then reject) before releasing the command via `--block-fd`. When `ip6tables` is available and the kernel has IPv6 enabled, slirp4netns is launched with `--enable-ipv6` and a parallel `ip6tables` filter is installed. No root needed.
 - **Linux (unshare fallback)**: Two-layer `unshare` — outer creates user namespace, inner creates network namespace. `slirp4netns` runs inside the user namespace. Same `iptables`/`ip6tables` filtering. `--port` needs bwrap.
 - **macOS**: `sandbox-exec` Seatbelt profiles with `(deny network-outbound)` and per-host `(allow network-outbound (remote ip ...))` rules. Kernel-enforced via Sandbox.kext. The network is shared with your Mac, so `--port` isn't needed (and localhost services stay reachable when `allow_net` is empty).
 

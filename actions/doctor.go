@@ -68,6 +68,9 @@ func (a *DoctorAction) collect(online bool) []services.Check {
 	}
 	if services.DoctorVerdict(checks) != services.VerdictBlocked {
 		checks = append(checks, a.socketCheck())
+		if runtime.GOOS == "linux" {
+			checks = append(checks, a.firewallCheck())
+		}
 	}
 	if cfgErr == nil {
 		checks = append(checks, services.IdentityChecks(cfg)...)
@@ -177,6 +180,36 @@ func (a *DoctorAction) socketCheck() services.Check {
 		c.Fix = "update aigate; report it with the output of: aigate doctor --report"
 	}
 	return c
+}
+
+// firewallCheck runs a real sandbox with an allow_net list, so a machine
+// where the firewall can't be installed is known before a session needs it.
+func (a *DoctorAction) firewallCheck() services.Check {
+	c := services.Check{ID: "allow-net-firewall", Group: "Sandbox", Name: "allow_net firewall", Status: services.StatusOK,
+		Detail: "own network per session; allow_net firewall installs (tested)"}
+	if _, err := exec.LookPath("slirp4netns"); err != nil {
+		c.Status, c.Detail = services.StatusNote, "skipped: needs slirp4netns (see above)"
+		return c
+	}
+	wd, err := os.MkdirTemp("", "aigate-doctor-")
+	if err != nil {
+		c.Status, c.Detail = services.StatusWarn, "could not create a test folder: "+err.Error()
+		return c
+	}
+	defer func() { _ = os.RemoveAll(wd) }()
+	var out bytes.Buffer
+	profile := domain.SandboxProfile{WorkDir: wd, Config: domain.Config{AllowNet: []string{"127.0.0.1"}}}
+	if err := a.platform.RunSandboxed(profile, "true", nil, &out, &out); err != nil {
+		c.Status = services.StatusFail
+		c.Detail = "sessions with allow_net won't start: " + strings.TrimSpace(firstLine(err.Error()+" "+out.String()))
+		c.Fix = "aigate doctor --report   # and open an issue with it; meanwhile: aigate deny net HOST to run without allow_net"
+	}
+	return c
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
+	return line
 }
 
 // renderDoctor prints checks by group, one verdict line, then the fixes.

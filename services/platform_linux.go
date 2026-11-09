@@ -235,7 +235,7 @@ func (p *LinuxPlatform) runUnshare(profile domain.SandboxProfile, cmd string, ar
 	sb.WriteString(buildExecDenyOverrides(profile))
 	sb.WriteString(buildIdentityOverrides(profile))
 	sb.WriteString(buildAgentOverrides())
-	sb.WriteString(execAsCommand(stage.dst, profile.WorkDir, nil, cmd, args))
+	sb.WriteString(execAsCommand(stage.dst, profile.WorkDir, cmd, args))
 
 	fullArgs := append(unshareArgs, "sh", "-c", sb.String())
 	return p.exec.RunPassthroughWith(stdout, stderr, "unshare", fullArgs...)
@@ -494,7 +494,7 @@ func buildNetFilterScript(allowNetHosts []string, ipv6Enabled bool, profile doma
 	sb.WriteString("mount -t proc proc /proc\n")
 
 	sb.WriteString(stage.bindScript())
-	writeNetSetup(&sb, allowNetHosts, ipv6Enabled, nil)
+	writeNetSetup(&sb, allowNetHosts, ipv6Enabled)
 
 	// Write policy file + mount overrides (deny_read markers point here)
 	sb.WriteString(buildPolicyFile(profile))
@@ -504,7 +504,7 @@ func buildNetFilterScript(allowNetHosts []string, ipv6Enabled bool, profile doma
 	sb.WriteString(buildExecDenyOverrides(profile))
 	sb.WriteString(buildIdentityOverrides(profile))
 	sb.WriteString(buildAgentOverrides())
-	sb.WriteString(execAsCommand(stage.dst, profile.WorkDir, nil, cmd, args))
+	sb.WriteString(execAsCommand(stage.dst, profile.WorkDir, cmd, args))
 	return sb.String()
 }
 

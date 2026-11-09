@@ -8,31 +8,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
 // Published ports (aigate run --port): slirp4netns forwards the host's
-// 127.0.0.1:PORT to the sandbox's tap0, and a DNAT rule inside sends it on to
-// 127.0.0.1:PORT there, so dev servers that only listen on localhost (the
-// usual default) are reachable too.
-
-// writePortRedirects runs during setup, while the script still has
-// capabilities. Replies to forwarded connections are allowed through an
-// allow_net firewall by connection state only (no new outbound by port).
-func writePortRedirects(sb *strings.Builder, ports []int, firewall bool) {
-	if len(ports) == 0 {
-		return
-	}
-	sb.WriteString("echo 1 > /proc/sys/net/ipv4/conf/all/route_localnet\n")
-	sb.WriteString("echo 1 > /proc/sys/net/ipv4/conf/tap0/route_localnet\n")
-	for _, p := range ports {
-		fmt.Fprintf(sb, "iptables -t nat -A PREROUTING -i tap0 -p tcp --dport %d -j DNAT --to-destination 127.0.0.1:%d\n", p, p)
-	}
-	if firewall {
-		sb.WriteString("iptables -I OUTPUT 1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT\n")
-	}
-}
+// 127.0.0.1:PORT to the sandbox's tap0, and a DNAT rule inside (see
+// firewallRules) sends it on to 127.0.0.1:PORT there, so dev servers that
+// only listen on localhost (the usual default) are reachable too.
 
 // slirpAPISocket returns a private path for slirp4netns' control socket.
 func slirpAPISocket() (path string, cleanup func(), err error) {

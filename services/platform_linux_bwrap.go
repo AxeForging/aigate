@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"golang.org/x/term"
@@ -278,22 +279,18 @@ func writeTmpFile(pattern, content string) (string, error) {
 	return f.Name(), nil
 }
 
-// runWithBwrapNetFilter runs a network-filtered sandbox using bwrap + slirp4netns.
+// runWithBwrapNetFilter runs a sandbox with its own network: bwrap +
+// slirp4netns, configured from the host side.
 //
-// Architecture (bwrap-native, no nested unshare):
+//		bwrap [mounts] --unshare-net --info-fd 3 --block-fd 4 -- CMD
+//		  ├── slirp4netns --configure <child-PID> tap0   (host side, --ready-fd)
+//		  └── nsenter … iptables-restore                 (host side, allow_net/ports)
 //
-//	bwrap [deny mounts] --unshare-net --info-fd 3 -- sh -c <net-setup+exec>
-//	  └── slirp4netns --configure <child-PID> tap0   (launched from host)
-//
-// bwrap creates the network namespace natively via --unshare-net. The
-// orchestration (two-process dance) is handled in Go:
-//  1. bwrap writes {"child-pid": N} to info-fd once namespaces are ready.
-//  2. Parent reads the PID and launches slirp4netns from host-side.
-//  3. The inner script waits for tap0, sets up iptables, then execs the command.
-//
-// This avoids the nested `unshare --net` inside bwrap's user namespace, which
-// fails with EPERM on systems where network-namespace creation requires
-// CAP_SYS_ADMIN in the initial user namespace.
+//	 1. bwrap writes {"child-pid": N} to info-fd once namespaces exist, then
+//	    waits on block-fd before running CMD.
+//	 2. Go starts slirp4netns and waits until tap0 is up.
+//	 3. Go installs the firewall / port redirects inside the namespace.
+//	 4. Go releases block-fd: CMD starts, holding no capabilities.
 func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd string, args []string, stdout, stderr io.Writer) error {
 	ipv6Enabled := ipv6SandboxSupported()
 	helpers.Log.Debug().
@@ -312,26 +309,30 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 	if err != nil {
 		return fmt.Errorf("failed to build bwrap args: %w", err)
 	}
+	resolvArgs, err := resolvConfArgs(ipv6Enabled, &tmpFiles)
+	if err != nil {
+		return err
+	}
+	bwrapArgs = append(bwrapArgs, resolvArgs...)
+	bwrapArgs = appendBwrapNetArgs(bwrapArgs, cmd, args)
 
-	// Info pipe: bwrap writes {"child-pid": N} to fd 3 (ExtraFiles[0]) once
-	// namespaces are ready, before exec'ing the inner command.
+	// fd 3: bwrap reports the child PID. fd 4: bwrap waits for a byte here
+	// before running the command.
 	infoR, infoW, err := os.Pipe()
 	if err != nil {
 		return fmt.Errorf("create info pipe: %w", err)
 	}
 	defer infoR.Close() //nolint:errcheck
-
-	execBin, err := sandboxExecBinary()
+	blockR, blockW, err := os.Pipe()
 	if err != nil {
-		return err
+		infoW.Close() //nolint:errcheck
+		return fmt.Errorf("create block pipe: %w", err)
 	}
-	bwrapArgs = append(bwrapArgs, "--ro-bind", execBin, bwrapSandboxExec)
-	bwrapArgs = appendBwrapNetArgs(bwrapArgs, profile.Config.AllowNet, ipv6Enabled, profile.Ports, cmd, args)
+	defer blockW.Close() //nolint:errcheck
 
 	bwrapCmd := exec.Command("bwrap", bwrapArgs...)
-	bwrapCmd.ExtraFiles = []*os.File{infoW} // fd 3 in child
+	bwrapCmd.ExtraFiles = []*os.File{infoW, blockR}
 
-	// Start bwrap.
 	// When stdout is a masking writer (not a raw *os.File) AND stdin is a TTY,
 	// use a PTY so the child sees an interactive terminal. Otherwise connect
 	// stdout/stderr directly so the masking writer receives the output.
@@ -340,61 +341,61 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 	if !stdoutIsFile && term.IsTerminal(int(os.Stdin.Fd())) {
 		ptm, err = startBwrapWithPTY(bwrapCmd)
 		if err != nil {
-			// PTY unavailable — fall back to plain pipe so masking still applies.
 			helpers.Log.Warn().Err(err).Msg("PTY setup failed, falling back to plain pipe")
 			ptm = nil
-			err = startBwrapPlain(bwrapCmd, stdout, stderr, infoW)
+			err = startBwrapPlain(bwrapCmd, stdout, stderr)
 		}
 	} else {
-		err = startBwrapPlain(bwrapCmd, stdout, stderr, infoW)
+		err = startBwrapPlain(bwrapCmd, stdout, stderr)
 	}
-	infoW.Close() //nolint:errcheck // close write end in parent after Start (child has its own copy)
+	infoW.Close()  //nolint:errcheck // the child has its own copies
+	blockR.Close() //nolint:errcheck
 	if err != nil {
-		infoR.Close() //nolint:errcheck
 		return fmt.Errorf("start bwrap: %w", err)
 	}
+	// Never release block-fd on failure: bwrap reads EOF there as "go" and
+	// would run the command without its network setup. Kill instead — the
+	// waiting sandbox child too, which otherwise keeps the output pipes open.
+	childPID := 0
+	bwrapCmd.WaitDelay = 2 * time.Second
+	abort := func(cause error) error {
+		if childPID > 0 {
+			syscall.Kill(childPID, syscall.SIGKILL) //nolint:errcheck
+		}
+		bwrapCmd.Process.Kill() //nolint:errcheck
+		bwrapCmd.Wait()         //nolint:errcheck
+		if ptm != nil {
+			ptm.Close() //nolint:errcheck
+		}
+		return cause
+	}
 
-	// Read the child PID from info-fd (bwrap writes before exec'ing inner script).
-	childPID, err := readBwrapInfoPID(infoR)
-	infoR.Close() //nolint:errcheck
+	childPID, err = readBwrapInfoPID(infoR)
 	if err != nil {
-		bwrapCmd.Process.Kill() //nolint:errcheck
-		bwrapCmd.Wait()         //nolint:errcheck
-		if ptm != nil {
-			ptm.Close() //nolint:errcheck
-		}
-		return fmt.Errorf("bwrap info-fd: %w", err)
+		return abort(fmt.Errorf("bwrap info-fd: %w", err))
 	}
 
-	// Launch slirp4netns from the host side targeting the child's net namespace.
-	// Suppress stdout (verbose protocol debug), keep stderr for real errors.
-	// Its output is protocol chatter; kept only to explain a failure.
-	var slirpOut strings.Builder
-	sArgs := slirpArgs(childPID, ipv6Enabled)
-	apiSocket := ""
-	if len(profile.Ports) > 0 {
-		var cleanupAPI func()
-		if apiSocket, cleanupAPI, err = slirpAPISocket(); err != nil {
-			return fmt.Errorf("publish ports: %w", err)
-		}
-		defer cleanupAPI()
-		sArgs = append([]string{"--api-socket", apiSocket}, sArgs...)
+	slirp, apiSocket, cleanupSlirp, err := startSlirp(childPID, ipv6Enabled, len(profile.Ports) > 0)
+	if err != nil {
+		return abort(err)
 	}
-	slirpCmd := exec.Command("slirp4netns", sArgs...)
-	slirpCmd.Stdout = &slirpOut
-	slirpCmd.Stderr = &slirpOut
-	if slirpErr := slirpCmd.Start(); slirpErr != nil {
-		bwrapCmd.Process.Kill() //nolint:errcheck
-		bwrapCmd.Wait()         //nolint:errcheck
-		if ptm != nil {
-			ptm.Close() //nolint:errcheck
-		}
-		return fmt.Errorf("start slirp4netns: %w", slirpErr)
-	}
+	defer cleanupSlirp()
 
+	sandboxNet, err := openSandboxNet(childPID)
+	if err != nil {
+		return abort(fmt.Errorf("sandbox network: %w", err))
+	}
+	defer sandboxNet.Close()
+	if err := configureSandboxNet(sandboxNet, profile.Config.AllowNet, ipv6Enabled, profile.Ports); err != nil {
+		return abort(err)
+	}
 	if apiSocket != "" {
 		publishPorts(apiSocket, profile.Ports)
 	}
+	if _, err := blockW.Write([]byte{1}); err != nil { // network ready: run the command
+		return abort(fmt.Errorf("start command: %w", err))
+	}
+	blockW.Close() //nolint:errcheck
 
 	// PTY: forward terminal I/O and propagate resize events.
 	var outDone chan struct{}
@@ -426,53 +427,85 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 		go func() { _, _ = io.Copy(stdout, ptm); close(outDone) }()
 	}
 
-	// Wait for bwrap to finish (and its output to drain), then stop slirp4netns.
+	// Wait for bwrap to finish (and its output to drain); slirp stops after.
 	bwrapErr := bwrapCmd.Wait()
 	if ptm != nil {
 		<-outDone   // EIO once the sandbox side of the PTY is closed
 		ptm.Close() //nolint:errcheck
 	}
-	slirpCmd.Process.Kill() //nolint:errcheck
-	slirpCmd.Wait()         //nolint:errcheck
 	if bwrapErr != nil {
-		helpers.Log.Debug().Str("slirp4netns", slirpOut.String()).Msg("network helper output")
+		helpers.Log.Debug().Str("slirp4netns", slirp.String()).Msg("network helper output")
 	}
 	return bwrapErr
 }
 
-// appendBwrapNetArgs appends the network-sandbox-specific bwrap flags and the
-// inner shell script to an existing bwrap arg slice. Separated for testability.
-//
-// The inner script needs to run iptables (CAP_NET_ADMIN) and bind-mount
-// resolv.conf (CAP_SYS_ADMIN), so we set UID 0 and add the two caps.
-// bwrap drops all capabilities by default even inside the user namespace;
-// without --uid 0, the process is UID 1000 and nf_tables rejects it.
-func appendBwrapNetArgs(args, allowNet []string, ipv6Enabled bool, ports []int, cmd string, cmdArgs []string) []string {
-	// Set UID/GID to 0 inside the sandbox: nf_tables requires being root (UID 0)
-	// in the user namespace, not just having CAP_NET_ADMIN.
-	args = append(args, "--uid", "0", "--gid", "0")
-	// CAP_NET_ADMIN: iptables / nf_tables rule manipulation.
-	// CAP_SYS_ADMIN: mount --bind resolv.conf and mount --make-rprivate.
-	args = append(args, "--cap-add", "cap_net_admin", "--cap-add", "cap_sys_admin")
-	// bwrap creates the network namespace natively; info-fd 3 (ExtraFiles[0])
-	// carries the child PID so the parent can launch slirp4netns.
-	args = append(args, "--unshare-net", "--info-fd", "3")
-	// Setup runs in the host's real shell, bound privately: deny_exec rules
-	// (e.g. "sh -c") are mounted over the system shell and are for the
-	// command, not for aigate's own setup.
-	args = append(args, "--ro-bind", hostShell(), bwrapSetupShell)
-	innerScript := buildNetOnlyScript(allowNet, ipv6Enabled, ports, cmd, cmdArgs)
-	args = append(args, "--", bwrapSetupShell, "-c", innerScript)
-	return args
+// startSlirp attaches slirp4netns to the sandbox's network namespace and
+// waits until tap0 is configured. With api, it also opens the control socket
+// used to publish ports. cleanup stops it.
+func startSlirp(childPID int, ipv6, api bool) (out *strings.Builder, apiSocket string, cleanup func(), err error) {
+	out = &strings.Builder{}
+	args := slirpArgs(childPID, ipv6)
+	removeAPI := func() {}
+	if api {
+		if apiSocket, removeAPI, err = slirpAPISocket(); err != nil {
+			return out, "", func() {}, fmt.Errorf("publish ports: %w", err)
+		}
+		args = append([]string{"--api-socket", apiSocket}, args...)
+	}
+	readyR, readyW, err := os.Pipe()
+	if err != nil {
+		removeAPI()
+		return out, "", func() {}, err
+	}
+	defer readyR.Close() //nolint:errcheck
+	args = append([]string{"--ready-fd", "3"}, args...)
+	cmd := exec.Command("slirp4netns", args...)
+	cmd.Stdout, cmd.Stderr = out, out // protocol chatter; kept to explain a failure
+	cmd.ExtraFiles = []*os.File{readyW}
+	if err := cmd.Start(); err != nil {
+		readyW.Close() //nolint:errcheck
+		removeAPI()
+		return out, "", func() {}, fmt.Errorf("start slirp4netns: %w", err)
+	}
+	readyW.Close() //nolint:errcheck
+	cleanup = func() {
+		cmd.Process.Kill() //nolint:errcheck
+		cmd.Wait()         //nolint:errcheck
+		removeAPI()
+	}
+	ready := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 1)
+		_, err := readyR.Read(buf)
+		ready <- err
+	}()
+	select {
+	case err := <-ready:
+		if err != nil {
+			cleanup()
+			return out, "", func() {}, fmt.Errorf("slirp4netns didn't start: %s", strings.TrimSpace(out.String()))
+		}
+	case <-time.After(10 * time.Second):
+		cleanup()
+		return out, "", func() {}, fmt.Errorf("slirp4netns didn't come up within 10s: %s", strings.TrimSpace(out.String()))
+	}
+	return out, apiSocket, cleanup, nil
+}
+
+// appendBwrapNetArgs adds the own-network flags and the command. bwrap runs
+// the command itself (no setup shell, no extra capabilities); it waits on
+// block-fd (fd 4) until the host side has configured the network.
+func appendBwrapNetArgs(args []string, cmd string, cmdArgs []string) []string {
+	args = append(args, "--unshare-net", "--info-fd", "3", "--block-fd", "4", "--", cmd)
+	return append(args, cmdArgs...)
 }
 
 // startBwrapPlain starts bwrap with direct stdout/stderr writers (no PTY).
-// infoW is added as ExtraFiles[0] (fd 3 in the child) for --info-fd.
-func startBwrapPlain(bwrapCmd *exec.Cmd, stdout, stderr io.Writer, infoW *os.File) error {
+// The caller sets ExtraFiles (info-fd, block-fd).
+func startBwrapPlain(bwrapCmd *exec.Cmd, stdout, stderr io.Writer) error {
 	bwrapCmd.Stdin = os.Stdin
 	bwrapCmd.Stdout = stdout
 	bwrapCmd.Stderr = stderr
-	bwrapCmd.ExtraFiles = []*os.File{infoW}
 	return bwrapCmd.Start()
 }
 
@@ -503,24 +536,6 @@ func readBwrapInfoPID(r io.Reader) (int, error) {
 		return 0, fmt.Errorf("bwrap info JSON: missing child-pid")
 	}
 	return info.ChildPID, nil
-}
-
-// buildNetOnlyScript builds the shell script that runs INSIDE the bwrap
-// sandbox. bwrap has already applied isolation (user ns, mount ns, deny_read,
-// deny_exec, config dir hide, /proc via --proc). This script handles only the
-// network-specific setup: waiting for tap0, pointing resolv.conf at the
-// slirp4netns DNS forwarder(s), configuring iptables (+ ip6tables when v6
-// enabled), then exec'ing the command.
-func buildNetOnlyScript(allowNetHosts []string, ipv6Enabled bool, ports []int, cmd string, args []string) string {
-	var sb strings.Builder
-
-	// Ensure mount propagation is private (bwrap sets this, but be defensive).
-	sb.WriteString("mount --make-rprivate / 2>/dev/null || true\n")
-
-	writeNetSetup(&sb, allowNetHosts, ipv6Enabled, ports)
-	// The command gets deny_exec's view of sh, not the private setup shell.
-	sb.WriteString(execAsCommand(bwrapSandboxExec, "", []string{bwrapSetupShell}, cmd, args))
-	return sb.String()
 }
 
 // findHardlinks scans searchDir for files that share the same device+inode as

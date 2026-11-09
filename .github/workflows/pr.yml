@@ -112,13 +112,4 @@ jobs:
             # Restricted, but this image already allows bwrap: doctor must say so.
             grep -Eq "apparmor userns +bwrap can create its namespaces" /tmp/doctor.txt
           fi
-      - name: debug userns capabilities (temporary)
-        shell: bash {0}
-        run: |
-          for f in /proc/sys/kernel/apparmor_restrict_*; do echo "$f=$(cat $f)"; done
-          probe() { bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --unshare-user --unshare-pid --uid 0 --gid 0 --cap-add cap_net_admin --cap-add cap_sys_admin --unshare-net -- sh -c 'grep -E "^Cap(Eff|Bnd)" /proc/self/status; echo "label=$(cat /proc/self/attr/current)"; iptables -S OUTPUT; echo "iptables=$?"'; }
-          echo "== as configured"; probe
-          echo "== unconfined restriction off"; sudo sysctl -w kernel.apparmor_restrict_unprivileged_unconfined=0; probe
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_unconfined=1
-          sudo dmesg | grep -i apparmor | tail -15
       - run: go test -race -count=1 ./...

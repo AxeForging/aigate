@@ -117,7 +117,9 @@ func TestEscape_ProcCmdlinePID1(t *testing.T) {
 	if err != nil || trimmed == "" {
 		t.Fatalf("cannot read PID 1 cmdline inside sandbox: err=%v out=%q", err, out)
 	}
-	if strings.Contains(out, "systemd") || strings.Contains(out, "/sbin/init") {
+	// Only the program name: bwrap (PID 1 inside) lists its mount targets,
+	// which may include paths like /run/systemd/resolve/….
+	if prog := strings.Fields(trimmed)[0]; strings.Contains(prog, "systemd") || prog == "/sbin/init" || prog == "init" {
 		t.Errorf("PID 1 is host init (%q) — PID namespace not working", trimmed)
 	}
 }
