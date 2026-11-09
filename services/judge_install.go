@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+
+	"github.com/AxeForging/aigate/domain"
 )
 
 // judgeHookEvents are the Claude Code events aigate judge handles.
@@ -181,4 +184,51 @@ func (i JudgeHookInstaller) isOurs(group any) bool {
 	}
 	h, _ := hs[0].(map[string]any)
 	return h["command"] == i.Command
+}
+
+// ClaudeSettingsFor picks the Claude Code settings.json that applies in wd:
+// the identity active there (flag, bound folder, default), else
+// $CLAUDE_CONFIG_DIR, else ~/.claude. who says which, for messages.
+func ClaudeSettingsFor(cfg *domain.Config, identityFlag, wd string) (path, who string, err error) {
+	id, err := NewIdentityService().Resolve(cfg, identityFlag, wd)
+	if err != nil {
+		return "", "", err
+	}
+	if id != nil {
+		return filepath.Join(id.ClaudeDir, "settings.json"), "identity " + id.Name, nil
+	}
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		return filepath.Join(dir, "settings.json"), "CLAUDE_CONFIG_DIR", nil
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude", "settings.json"), "default Claude config", nil
+}
+
+var judgeHookCommand = regexp.MustCompile(`aigate['"]?\s+judge\s*$`)
+
+// HasJudgeHook reports whether settings has an aigate judge PreToolUse hook,
+// whichever path aigate was installed from.
+func HasJudgeHook(settings string) bool {
+	b, err := os.ReadFile(settings)
+	if err != nil {
+		return false
+	}
+	var doc struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if json.Unmarshal(b, &doc) != nil {
+		return false
+	}
+	for _, g := range doc.Hooks["PreToolUse"] {
+		for _, h := range g.Hooks {
+			if judgeHookCommand.MatchString(h.Command) {
+				return true
+			}
+		}
+	}
+	return false
 }

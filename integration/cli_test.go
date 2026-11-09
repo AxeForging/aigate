@@ -70,8 +70,8 @@ func TestCLI_Doctor(t *testing.T) {
 	if !strings.Contains(output, "doctor") {
 		t.Error("doctor output should contain 'doctor'")
 	}
-	if !strings.Contains(output, "Isolation mode") {
-		t.Error("doctor output should contain 'Isolation mode'")
+	if !strings.Contains(output, "Verdict:") {
+		t.Error("doctor output should end with a verdict")
 	}
 }
 

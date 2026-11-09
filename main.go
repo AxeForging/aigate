@@ -33,6 +33,7 @@ func main() {
 	setupAction := actions.NewSetupAction(platform, configSvc)
 	helpAIAction := actions.NewHelpAIAction()
 	doctorAction := actions.NewDoctorAction(configSvc, platform)
+	explainAction := actions.NewExplainAction(configSvc)
 	denyAction := actions.NewDenyAction(ruleSvc, configSvc, platform)
 	allowAction := actions.NewAllowAction(ruleSvc, configSvc, platform)
 	runAction := actions.NewRunAction(runnerSvc, configSvc, platform)
@@ -243,10 +244,29 @@ func main() {
 			Action: resetAction.Execute,
 		},
 		{
+			Name:        "explain",
+			Usage:       "Say whether a path or command would be allowed here, which layer decides, and how to change it",
+			ArgsUsage:   "PATH | -- COMMAND [ARGS…]",
+			Description: "Runs nothing. Uses exactly what `aigate run` would enforce in this folder\n(config, project .aigate.yaml, identity, judge rules). Exits 1 when blocked.\n\nExamples:\n   aigate explain ~/.ssh/id_ed25519\n   aigate explain .env\n   aigate explain -- curl https://example.com\n   aigate explain --identity personal ~/.config/gh-work/hosts.yml\n   aigate explain --judge -- rm -rf ~/      # also ask the judge models",
+			Flags: []cli.Flag{
+				identityFlag, allowPathFlag,
+				cli.BoolFlag{Name: "judge", Usage: "Also ask the judge's models (contacts the provider)"},
+				cli.BoolFlag{Name: "path", Usage: "Treat the argument as a path"},
+				cli.BoolFlag{Name: "command", Usage: "Treat the arguments as a command"},
+				cli.BoolFlag{Name: "json", Usage: "Machine-readable output"},
+			},
+			Action: explainAction.Execute,
+		},
+		{
 			Name:        "doctor",
 			Usage:       "Check sandbox prerequisites and show active isolation mode",
-			Description: "Checks your config, OS accounts, and sandbox tooling, then prints a verdict\n(READY / DEGRADED / BLOCKED) with copy-pasteable next steps.\nExits non-zero when the sandbox cannot run, so scripts can gate on it.",
-			Action:      doctorAction.Execute,
+			Description: "Checks config, sandbox tooling, agent-socket hiding, identities and the judge,\nthen prints a verdict (READY / DEGRADED / BLOCKED) with copy-pasteable fixes.\nExits non-zero when blocked, so scripts can gate on it.\n\nExamples:\n   aigate doctor\n   aigate doctor --json      # for scripts\n   aigate doctor --report    # safe to paste in a public issue",
+			Flags: []cli.Flag{
+				cli.BoolFlag{Name: "json", Usage: "Machine-readable output (versioned schema)"},
+				cli.BoolFlag{Name: "report", Usage: "Plain text with home paths, user names and secrets removed, for bug reports"},
+				cli.BoolFlag{Name: "offline", Usage: "Don't contact judge model providers"},
+			},
+			Action: doctorAction.Execute,
 		},
 		{
 			Name:  "serve",
