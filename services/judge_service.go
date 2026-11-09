@@ -103,3 +103,26 @@ func strictest(a, b Verdict) Verdict {
 	}
 	return b
 }
+
+// judgeAdapters builds model adapters by name. Unregistered names are
+// skipped, so a chain can list judges before their adapters exist.
+var judgeAdapters = map[string]func(JudgeSettings) Judge{}
+
+// BuildJudgeChain assembles the configured chain. "rules" is always first
+// when listed; "off" or an empty chain judges nothing.
+func BuildJudgeChain(s JudgeSettings) *Chain {
+	c := &Chain{EscalateBelow: s.EscalateBelow, Timeout: s.Timeout}
+	for _, name := range s.Chain {
+		switch name {
+		case JudgeOff:
+			return &Chain{}
+		case JudgeRules:
+			c.Rules = RulesJudge{}
+		default:
+			if build, ok := judgeAdapters[name]; ok {
+				c.Models = append(c.Models, build(s))
+			}
+		}
+	}
+	return c
+}
