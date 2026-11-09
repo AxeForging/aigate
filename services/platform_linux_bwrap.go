@@ -375,17 +375,17 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 		return abort(fmt.Errorf("bwrap info-fd: %w", err))
 	}
 
-	slirp, apiSocket, cleanupSlirp, err := startSlirp(childPID, ipv6Enabled, len(profile.Ports) > 0)
-	if err != nil {
-		return abort(err)
-	}
-	defer cleanupSlirp()
-
 	sandboxNet, err := openSandboxNet(childPID)
 	if err != nil {
 		return abort(fmt.Errorf("sandbox network: %w", err))
 	}
 	defer sandboxNet.Close()
+
+	slirp, apiSocket, cleanupSlirp, err := startSlirp(childPID, sandboxNet.userns, ipv6Enabled, len(profile.Ports) > 0)
+	if err != nil {
+		return abort(err)
+	}
+	defer cleanupSlirp()
 	if err := configureSandboxNet(sandboxNet, profile.Config.AllowNet, ipv6Enabled, profile.Ports); err != nil {
 		return abort(err)
 	}
@@ -440,9 +440,11 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 }
 
 // startSlirp attaches slirp4netns to the sandbox's network namespace and
-// waits until tap0 is configured. With api, it also opens the control socket
-// used to publish ports. cleanup stops it.
-func startSlirp(childPID int, ipv6, api bool) (out *strings.Builder, apiSocket string, cleanup func(), err error) {
+// waits until tap0 is configured. userns is the user namespace that owns that
+// network (bwrap nests the command one deeper; joining that one fails with
+// EPERM). With api, it also opens the control socket used to publish ports.
+// cleanup stops it.
+func startSlirp(childPID int, userns *os.File, ipv6, api bool) (out *strings.Builder, apiSocket string, cleanup func(), err error) {
 	out = &strings.Builder{}
 	args := slirpArgs(childPID, ipv6)
 	removeAPI := func() {}
@@ -458,10 +460,10 @@ func startSlirp(childPID int, ipv6, api bool) (out *strings.Builder, apiSocket s
 		return out, "", func() {}, err
 	}
 	defer readyR.Close() //nolint:errcheck
-	args = append([]string{"--ready-fd", "3"}, args...)
+	args = append([]string{"--ready-fd", "3", "--userns-path", "/proc/self/fd/4"}, args...)
 	cmd := exec.Command("slirp4netns", args...)
 	cmd.Stdout, cmd.Stderr = out, out // protocol chatter; kept to explain a failure
-	cmd.ExtraFiles = []*os.File{readyW}
+	cmd.ExtraFiles = []*os.File{readyW, userns}
 	if err := cmd.Start(); err != nil {
 		readyW.Close() //nolint:errcheck
 		removeAPI()

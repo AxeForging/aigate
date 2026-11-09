@@ -102,6 +102,7 @@ func resolveAllowNet(hosts []string, lookup func(string) ([]net.IP, error)) (v4,
 type sandboxNet struct {
 	pid    int
 	userns *os.File
+	lock   string // private xtables lock: the host's /run/xtables.lock isn't writable for us
 }
 
 func openSandboxNet(pid int) (*sandboxNet, error) {
@@ -114,16 +115,27 @@ func openSandboxNet(pid int) (*sandboxNet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("find the sandbox network's owner: %w", err)
 	}
-	return &sandboxNet{pid: pid, userns: os.NewFile(uintptr(fd), "userns")}, nil
+	userns := os.NewFile(uintptr(fd), "userns")
+	lock, err := os.CreateTemp("", "aigate-xtables-*.lock")
+	if err != nil {
+		_ = userns.Close()
+		return nil, err
+	}
+	_ = lock.Close()
+	return &sandboxNet{pid: pid, userns: userns, lock: lock.Name()}, nil
 }
 
-func (n *sandboxNet) Close() { _ = n.userns.Close() }
+func (n *sandboxNet) Close() {
+	_ = n.userns.Close()
+	_ = os.Remove(n.lock)
+}
 
 // run executes name inside the namespace; stdin may be empty.
 func (n *sandboxNet) run(stdin, name string, args ...string) error {
 	nsArgs := append([]string{"--user=/proc/self/fd/3", fmt.Sprintf("--net=/proc/%d/ns/net", n.pid), "--preserve-credentials", "--", name}, args...)
 	cmd := exec.Command("nsenter", nsArgs...)
 	cmd.ExtraFiles = []*os.File{n.userns}
+	cmd.Env = append(os.Environ(), "XTABLES_LOCKFILE="+n.lock)
 	cmd.Stdin = strings.NewReader(stdin)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%s: %v: %s", name, err, strings.TrimSpace(string(out)))
