@@ -76,6 +76,9 @@ func (s *IdentityService) validateOne(name string, id domain.Identity, owners ma
 	if !identityNameRe.MatchString(name) {
 		bad("invalid identity name (use lowercase letters, digits, - or _)", "")
 	}
+	if name == "none" {
+		bad(`"none" is reserved (aigate identity use none unbinds a folder); pick another name`, "")
+	}
 	for _, d := range []struct{ key, val string }{{"claude_dir", id.ClaudeDir}, {"gh_dir", id.GhDir}} {
 		if d.val == "" {
 			bad(d.key+" is required", "aigate identity add "+name)
