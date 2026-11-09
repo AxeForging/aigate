@@ -75,6 +75,7 @@ func TestValidate_Problems(t *testing.T) {
 		wantFix   string
 	}{
 		{"bad name", func(c *domain.Config) { c.Identities["Bad Name!"] = c.Identities["work"] }, true, "invalid identity name", ""},
+		{"reserved name", func(c *domain.Config) { c.Identities["none"] = c.Identities["work"] }, true, "reserved", ""},
 		{"missing claude_dir", func(c *domain.Config) {
 			w := c.Identities["work"]
 			w.ClaudeDir = ""

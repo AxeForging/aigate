@@ -38,6 +38,8 @@ func main() {
 	runAction := actions.NewRunAction(runnerSvc, configSvc, platform)
 	statusAction := actions.NewStatusAction(configSvc, platform)
 	resetAction := actions.NewResetAction(platform, configSvc)
+	identityAction := actions.NewIdentityAction(configSvc)
+	whoamiAction := actions.NewWhoamiAction(configSvc)
 
 	app := cli.NewApp()
 	app.Name = "aigate"
@@ -122,6 +124,44 @@ func main() {
 					Action:      allowAction.ExecutePath,
 				},
 			},
+		},
+		{
+			Name:        "identity",
+			Usage:       "Manage identities (separate Claude/gh/git/ssh logins per account)",
+			Description: "Each identity only sees its own logins inside the sandbox.\n\nExamples:\n   aigate identity list\n   aigate identity use work        # this folder (and inside it) runs as work\n   aigate identity use none        # unbind this folder\n   aigate identity show work",
+			Subcommands: []cli.Command{
+				{
+					Name:    "list",
+					Aliases: []string{"ls"},
+					Usage:   "List identities (* = active in this folder)",
+					Action:  identityAction.List,
+				},
+				{
+					Name:      "show",
+					Usage:     "Show one identity, its folders and any problems",
+					ArgsUsage: "NAME",
+					Action:    identityAction.Show,
+				},
+				{
+					Name:      "use",
+					Usage:     "Bind a folder (default: current) to an identity; NAME \"none\" unbinds",
+					ArgsUsage: "NAME [FOLDER]",
+					Action:    identityAction.Use,
+				},
+				{
+					Name:      "remove",
+					Aliases:   []string{"rm"},
+					Usage:     "Remove an identity from config (its login folders are kept)",
+					ArgsUsage: "NAME",
+					Action:    identityAction.Remove,
+				},
+			},
+		},
+		{
+			Name:   "whoami",
+			Usage:  "Show which identity aigate run uses in this folder, and why",
+			Flags:  []cli.Flag{identityFlag},
+			Action: whoamiAction.Execute,
 		},
 		{
 			Name:        "run",
