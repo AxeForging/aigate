@@ -2,7 +2,7 @@ module github.com/AxeForging/aigate
 
 go 1.25.0
 
-toolchain go1.25.12
+toolchain go1.26.10
 
 require (
 	github.com/Netflix/go-expect v0.0.0-20220104043353-73e0943537d2
