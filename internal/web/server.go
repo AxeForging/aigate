@@ -45,7 +45,7 @@ func New(opts Options) (*Server, error) {
 	if opts.AuditSvc == nil {
 		opts.AuditSvc = services.NewAuditService(opts.ConfigSvc)
 	}
-	t, err := template.ParseFS(templatesFS, "templates/*.html.tmpl")
+	t, err := template.New("").Funcs(template.FuncMap{"tilde": services.TildePath}).ParseFS(templatesFS, "templates/*.html.tmpl")
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
 	}
