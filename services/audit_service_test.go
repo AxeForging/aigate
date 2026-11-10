@@ -61,6 +61,8 @@ func TestAuditWriter_TUIOutput(t *testing.T) {
 			[]AuditEvent{{Rule: "deny_exec", Detail: execMsg}}},
 		{"read block is deny_read", readMsg + "\n", []AuditEvent{{Rule: "deny_read", Detail: readMsg}}},
 		{"plain output", "hello\nworld\n", nil},
+		{"judge ask and status lines", esc("[aigate] judge wants your OK: Bash rm -rf build — network access to an unknown host (clef). Answer Yes to run it this once, or No to stop it.") +
+			"\n[aigate] judge: clef-flash unavailable (request failed); used local rules\n", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

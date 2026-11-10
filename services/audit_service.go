@@ -258,7 +258,7 @@ var cursorJumpRe = regexp.MustCompile(`\x1b\[[0-9;]*[Hf]`)
 // aigate output. Judge messages are skipped: the judge logs its own decisions.
 func blockRule(msg string) string {
 	switch {
-	case strings.Contains(msg, "— judge:"):
+	case strings.Contains(msg, "— judge:") || strings.HasPrefix(msg, "[aigate] judge"):
 		return ""
 	case strings.HasPrefix(msg, "[aigate] blocked read") || strings.Contains(msg, "access denied"):
 		return "deny_read"
