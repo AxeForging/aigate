@@ -95,6 +95,12 @@ func (a *DoctorAction) setupChecks(cfg *domain.Config, err error) []services.Che
 	if len(cfg.AllowedPaths) == 0 {
 		conf.Status, conf.Fix = services.StatusWarn, "aigate allow path ~/.cache   # turns on filesystem scope"
 	}
+	masks := services.Check{ID: "mask-presets", Group: "Setup", Name: "secret masking", Status: services.StatusOK,
+		Detail: fmt.Sprintf("%d built-in secret formats masked in output", len(cfg.MaskStdout.Presets))}
+	if missing := a.configSvc.MissingDefaultPresets(cfg); len(missing) > 0 {
+		masks.Status, masks.Fix = services.StatusWarn, "aigate init --upgrade"
+		masks.Detail = "newer secret formats not masked yet: " + strings.Join(missing, ", ")
+	}
 	groupOK, _ := a.platform.GroupExists(cfg.Group)
 	userOK, _ := a.platform.UserExists(cfg.User)
 	acct := services.Check{ID: "os-accounts", Group: "Setup", Name: "os accounts", Status: services.StatusOK,
@@ -103,7 +109,7 @@ func (a *DoctorAction) setupChecks(cfg *domain.Config, err error) []services.Che
 		acct.Status, acct.Fix = services.StatusNote, "sudo aigate setup   # optional"
 		acct.Detail = "missing; only needed for on-disk ACL rules, sandboxing works without them"
 	}
-	return []services.Check{conf, acct}
+	return []services.Check{conf, masks, acct}
 }
 
 // tool reports a binary on PATH; missing is the status when it isn't there.
