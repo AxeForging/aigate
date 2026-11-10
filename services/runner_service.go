@@ -71,6 +71,11 @@ func (s *RunnerService) Run(profile domain.SandboxProfile, cmd string, args []st
 	if s.audit != nil {
 		stdout = NewAuditWriter(stdout, s.audit, profile, cmd, args, "stdout")
 		stderr = NewAuditWriter(stderr, s.audit, profile, cmd, args, "stderr")
+		for _, w := range []io.Writer{stdout, stderr} {
+			if aw, ok := w.(*auditWriter); ok {
+				defer aw.Flush()
+			}
+		}
 	}
 	return s.platform.RunSandboxed(profile, cmd, args, stdout, stderr)
 }

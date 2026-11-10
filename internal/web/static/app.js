@@ -2,7 +2,12 @@ const state = {
   lastSync: null,
   decisions: [],
   filters: { query: '', kind: '', layer: '', identity: '' },
+  rules: {},
+  open: new Set(), // expanded lists and decisions, kept across refreshes
 };
+
+// Lists longer than this show their first items and a "Show all" toggle.
+const LIST_PREVIEW = 6;
 
 const ruleLabels = {
   deny_read: 'Hidden files',
@@ -80,12 +85,28 @@ function renderSyncNote() {
   el.classList.toggle('is-stale', seconds > 15);
 }
 
-function list(selector, items, empty) {
-  const el = document.querySelector(selector);
+function list(name, items, empty) {
+  const el = document.querySelector(`[data-list="${name}"]`);
   if (!el) return;
-  el.innerHTML = items && items.length
-    ? items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')
-    : `<li class="muted">${escapeHtml(empty)}</li>`;
+  if (!items || !items.length) {
+    el.innerHTML = `<li class="muted">${escapeHtml(empty)}</li>`;
+    return;
+  }
+  const key = `list:${name}`;
+  const long = items.length > LIST_PREVIEW + 1; // never hide a single item
+  const open = state.open.has(key);
+  const shown = long && !open ? items.slice(0, LIST_PREVIEW) : items;
+  el.innerHTML = shown.map((item) => `<li>${escapeHtml(item)}</li>`).join('') + (long ? `
+    <li class="list-more"><button type="button" class="link-btn" data-action="toggle" data-key="${key}" aria-expanded="${open}">
+      ${open ? 'Show fewer' : `Show all ${items.length}`}</button></li>` : '');
+}
+
+function renderPolicy() {
+  const rules = state.rules;
+  list('deny-read', rules.deny_read, 'none');
+  list('deny-exec', rules.deny_exec, 'none');
+  list('allow-net', rules.allow_net, 'any host (no allow_net)');
+  list('allowed-paths', rules.allowed_paths, 'scope off — all of $HOME is reachable');
 }
 
 function renderBars(byRule) {
@@ -158,8 +179,8 @@ function renderLatest(event) {
   }
   const why = [ruleLabels[event.rule] || event.rule, event.detail].filter(Boolean).join(' · ');
   el.innerHTML = `
-    <code class="latest-what">${escapeHtml(event.command || 'unknown command')}</code>
-    <p class="latest-why">${escapeHtml(why)}</p>
+    <code class="latest-what clamp" title="${escapeHtml(event.command || '')}">${escapeHtml(event.command || 'unknown command')}</code>
+    <p class="latest-why clamp" title="${escapeHtml(why)}">${escapeHtml(why)}</p>
     <time datetime="${escapeHtml(event.time || '')}">${escapeHtml(relativeTime(event.time))} · ${escapeHtml(formatTime(event.time))}</time>`;
 }
 
@@ -192,20 +213,50 @@ function renderEvents(decisions) {
     const laterNote = later
       ? `Later allowed once by ${later.os_user || 'a person'}${later.reason ? `: ${later.reason.replace('allowed once by the user: ', '')}` : ''}` : '';
     const what = d.what || d.reason || '';
+    const key = `decision:${d.time}|${d.kind}|${(d.what || '').slice(0, 60)}`;
+    const open = state.open.has(key);
     return `
-    <article class="decision" style="animation-delay:${Math.min(index * 18, 180)}ms">
+    <article class="decision${open ? ' is-open' : ''}" data-key="${escapeHtml(key)}" style="animation-delay:${Math.min(index * 18, 180)}ms">
       <time datetime="${escapeHtml(d.time || '')}" title="${escapeHtml(formatTime(d.time))}">${escapeHtml(formatTime(d.time))}</time>
       <span class="outcome outcome-${outcomeClass(d)}">${escapeHtml(kindLabel(d))}</span>
       <div class="decision-body">
-        ${what ? `<div class="decision-what">${escapeHtml(what)}</div>` : ''}
-        ${d.what && d.reason ? `<div class="decision-why">${escapeHtml(d.reason)}</div>` : ''}
+        ${what ? `<div class="decision-what clamp">${escapeHtml(what)}</div>` : ''}
+        ${d.what && d.reason ? `<div class="decision-why clamp">${escapeHtml(d.reason)}</div>` : ''}
+        <button type="button" class="link-btn decision-toggle" data-action="toggle" data-key="${escapeHtml(key)}" aria-expanded="${open}" hidden>${open ? 'Show less' : 'Show more'}</button>
         ${meta ? `<div class="decision-meta">${meta}</div>` : ''}
         ${scores ? `<div class="decision-scores">${escapeHtml(scores)}</div>` : ''}
         ${laterNote ? `<div class="decision-note">${escapeHtml(laterNote)} <span class="overridden">(overridden)</span></div>` : ''}
       </div>
     </article>`;
   }).join('');
+  markClamped(el);
   updateFilterCount(decisions.length, state.decisions.length);
+}
+
+// markClamped shows "Show more" only on rows whose text is actually cut.
+function markClamped(root) {
+  root.querySelectorAll('.decision').forEach((row) => {
+    const button = row.querySelector('.decision-toggle');
+    if (!button) return;
+    const cut = [...row.querySelectorAll('.clamp')].some((c) => c.scrollHeight > c.clientHeight + 1);
+    button.hidden = !(cut || row.classList.contains('is-open'));
+  });
+}
+
+function toggleOpen(key) {
+  if (state.open.has(key)) state.open.delete(key);
+  else state.open.add(key);
+  if (key.startsWith('list:')) {
+    renderPolicy();
+    return;
+  }
+  const row = document.querySelector(`.decision[data-key="${CSS.escape(key)}"]`);
+  if (!row) return;
+  const open = state.open.has(key);
+  row.classList.toggle('is-open', open);
+  const button = row.querySelector('.decision-toggle');
+  button.setAttribute('aria-expanded', String(open));
+  button.textContent = open ? 'Show less' : 'Show more';
 }
 
 function applyFilters() {
@@ -297,10 +348,8 @@ async function refresh() {
     setText('[data-field="rule-exec"]', (rules.deny_exec || []).length);
     setText('[data-field="rule-net"]', (rules.allow_net || []).length);
     setText('[data-field="rule-scope"]', (rules.allowed_paths || []).length);
-    list('[data-list="deny-read"]', rules.deny_read, 'none');
-    list('[data-list="deny-exec"]', rules.deny_exec, 'none');
-    list('[data-list="allow-net"]', rules.allow_net, 'any host (no allow_net)');
-    list('[data-list="allowed-paths"]', rules.allowed_paths, 'scope off — all of $HOME is reachable');
+    state.rules = rules;
+    renderPolicy();
     renderBars(data.counters.by_rule);
     renderLatest(data.last_blocked);
     renderSpark(data.events || []);
@@ -395,6 +444,11 @@ document.querySelectorAll('[data-filter]').forEach((control) => {
 document.addEventListener('click', async (event) => {
   if (event.target.closest('[data-action="clear-filters"]')) {
     clearFilters();
+    return;
+  }
+  const toggle = event.target.closest('[data-action="toggle"]');
+  if (toggle) {
+    toggleOpen(toggle.dataset.key);
     return;
   }
   const btn = event.target.closest('[data-copy]');
