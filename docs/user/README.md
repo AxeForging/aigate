@@ -639,8 +639,6 @@ Project config merges with global (extends, does not replace).
 
 ## How It Works
 
-Architecture diagrams are in [`docs/diagrams/`](../diagrams/).
-
 ### File isolation
 
 Two layers working together for defense-in-depth:
@@ -652,7 +650,26 @@ Two layers working together for defense-in-depth:
    - **Linux**: Mount namespaces overmount directories with empty tmpfs, files with `/dev/null`
    - **macOS**: Seatbelt `file-read*` deny rules in the sandbox profile
 
-![File Isolation](../diagrams/file-isolation.png)
+```mermaid
+flowchart LR
+    rules["deny_read rules<br/>.env, *.pem, ~/.ssh, secrets/ …"]
+    rules -- "aigate deny read" --> acl
+    rules -- "aigate run" --> rt
+
+    subgraph acl["Layer 1: persistent ACLs"]
+        lacl["Linux: setfacl<br/>group ai-agents gets no access"]
+        macl["macOS: chmod +a<br/>explicit deny entries"]
+    end
+
+    subgraph rt["Layer 2: runtime overrides, per session"]
+        ldir["Linux folders: empty read-only tmpfs"]
+        lfile["Linux files: /dev/null mounted over them"]
+        mseat["macOS: Seatbelt file-read* deny rules"]
+    end
+
+    acl --> agent["agent sees nothing to read"]
+    rt --> agent
+```
 
 ### Network isolation
 
@@ -676,23 +693,65 @@ How each platform does it:
 
 **Linux**:
 
-![Linux Network Isolation](../diagrams/linux-network.png)
+```mermaid
+flowchart TB
+    net(("internet"))
+
+    subgraph host["Your machine, set up by aigate before the command starts"]
+        slirp["slirp4netns<br/>user-mode networking<br/>DNS forwarder 10.0.2.3"]
+        setup["aigate: nsenter + iptables-restore<br/>loads the firewall from outside"]
+        hostlo["127.0.0.1 services, X11 socket<br/>unreachable"]
+    end
+
+    subgraph ns["Sandbox network namespace"]
+        proc["agent command<br/>your uid, no capabilities"]
+        fw["firewall: OUTPUT chain<br/>1. loopback<br/>2. DNS only to 10.0.2.3<br/>3. allow_net addresses<br/>4. reject the rest"]
+        tap["tap0 10.0.2.100"]
+        proc --> fw --> tap
+    end
+
+    setup -. "installs" .-> fw
+    tap <--> slirp <--> net
+    proc -. "blocked" .-x hostlo
+```
+
+With `allow_net` empty the firewall step is skipped, but the session still gets its own network. If `allow_net` is set and the firewall can't be installed, or `slirp4netns` is missing, the session refuses to start.
 
 **macOS**:
 
-![macOS Network Isolation](../diagrams/macos-network.png)
+```mermaid
+flowchart TB
+    net(("internet"))
+    subgraph sbx["sandbox-exec, enforced by Sandbox.kext"]
+        proc["agent command"]
+        prof["Seatbelt profile, generated from allow_net<br/>(deny network-outbound)<br/>(allow network-outbound (local ip))<br/>(allow network-outbound (remote ip HOST)) per host"]
+        proc -- "every connection checked by the kernel" --> prof
+    end
+    prof -- "listed hosts only" --> net
+```
 
 ### Process isolation (Linux)
 
 When `bwrap` is installed (recommended):
 
-- **User namespace** (`--unshare-user`): Maps calling user to a root-equivalent UID inside the namespace. Required for mount/net operations without real root.
+- **User namespace** (`--unshare-user`): Lets bwrap set up mounts without real root. The command itself runs as your normal uid with no capabilities, so it can't undo a mount or change the firewall.
 - **PID namespace** (`--unshare-pid`): Sandboxed process sees itself as PID 1, cannot see or signal host processes. `/proc` is remounted fresh.
 - **Mount namespace**: bwrap declaratively applies deny_read bind mounts, config-dir hiding, and deny_exec stubs before exec — no shell-based overrides.
 
-Without `bwrap`, aigate falls back to `unshare --user --map-root-user` + shell scripts for the same effects.
+Without `bwrap`, aigate falls back to `unshare --user --map-root-user` + shell scripts for the same effects; the last setup step drops every capability before the command starts.
 
-![Linux Process Isolation](../diagrams/linux-process.png)
+```mermaid
+flowchart TB
+    you(["aigate run -- CMD"]) --> pre{"deny_exec<br/>pre-check"}
+    pre -- "blocked" --> stop["refused, with the rule and how to allow it"]
+    pre -- "ok" --> bw
+
+    subgraph bw["bwrap: user + mount + PID namespaces"]
+        mounts["mounts<br/>deny_read hidden, $HOME scoped,<br/>deny_exec stubs, fresh /proc"]
+        proc["CMD<br/>sees itself as PID 1<br/>your uid, no capabilities"]
+        mounts --> proc
+    end
+```
 
 ### Command blocking
 
