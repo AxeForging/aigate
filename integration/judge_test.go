@@ -82,8 +82,11 @@ func TestJudgeHook_Decisions(t *testing.T) {
 				return
 			}
 			mustContain(t, out, `"`+tt.decision+`"`, tt.reason)
-			if tt.decision != "block" {
+			switch tt.decision {
+			case "deny":
 				mustContain(t, out, `"hookEventName":"PreToolUse"`, "[aigate] blocked", "— judge:", "To allow:")
+			case "ask": // answered in Claude Code's own Yes/No prompt
+				mustContain(t, out, `"hookEventName":"PreToolUse"`, "[aigate] judge wants your OK", "Answer Yes")
 			}
 		})
 	}
