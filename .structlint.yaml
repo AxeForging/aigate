@@ -44,7 +44,6 @@ file_naming_pattern:
     - "*.gif"
     - "*.jpg"
     - "*.svg"
-    - "*.puml"
     - "*.cast"
     - "*.css"
     - "*.js"
