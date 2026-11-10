@@ -400,3 +400,55 @@ func TestCLI_DoctorVerdict(t *testing.T) {
 		t.Errorf("doctor should print a verdict, got:\n%s", out)
 	}
 }
+
+// TestScope_HiddenCommandExplained: with scope on, a program installed under
+// $HOME outside the scope (like ~/.local/bin/claude, a link into
+// ~/.local/share) is refused up front with the folders to allow, instead of
+// bwrap's "execvp: No such file or directory". Following the fix makes it run.
+func TestScope_HiddenCommandExplained(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping sandbox integration test in short mode")
+	}
+	skipWithoutBwrap(t)
+	bin := buildBinary(t)
+	tmpHome, workDir, env := scopeEnv(t)
+	real := filepath.Join(tmpHome, ".local", "share", "agent", "versions", "1.0")
+	link := filepath.Join(tmpHome, ".local", "bin", "agent")
+	mkdirs(t, tmpHome, ".local/share/agent/versions", ".local/bin")
+	if err := os.WriteFile(real, []byte("#!/bin/sh\necho AGENT_RAN\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	env = append(env, "PATH="+filepath.Dir(link)+":"+os.Getenv("PATH"))
+	run := func(args ...string) (string, error) {
+		cmd := exec.Command(bin, args...)
+		cmd.Env, cmd.Dir = env, workDir
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+
+	out, err := run("run", "--", "agent")
+	if err == nil {
+		t.Fatalf("hidden program should be refused, got success:\n%s", out)
+	}
+	for _, want := range []string{
+		"agent is installed in ~/.local/bin and ~/.local/share/agent/versions, which the filesystem scope hides",
+		"aigate allow path ~/.local/bin ~/.local/share/agent/versions",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "execvp") {
+		t.Errorf("raw bwrap error shown instead of an explanation:\n%s", out)
+	}
+
+	if out, err := run("allow", "path", "~/.local/bin", "~/.local/share/agent/versions"); err != nil {
+		t.Fatalf("allow path: %v\n%s", err, out)
+	}
+	if out, err := run("run", "--", "agent"); err != nil || !strings.Contains(out, "AGENT_RAN") {
+		t.Fatalf("after allowing the folders the program should run: %v\n%s", err, out)
+	}
+}
