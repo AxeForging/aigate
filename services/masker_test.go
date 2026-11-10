@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"io"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/AxeForging/aigate/domain"
 )
@@ -47,6 +49,7 @@ func newMasker(t *testing.T, cfg domain.MaskStdout) (*MaskingWriter, *bytes.Buff
 	if err != nil {
 		t.Fatalf("NewMaskingWriter: %v", err)
 	}
+	mw.idle = time.Hour // only the pause test releases a held tail by time
 	return mw, &buf
 }
 
@@ -279,5 +282,152 @@ func TestNewMaskingWriter_UnknownPresetListsAll(t *testing.T) {
 	_, err := NewMaskingWriter(io.Discard, domain.MaskStdout{Presets: []string{"nope"}})
 	if err == nil || !strings.Contains(err.Error(), "cloudflare") || !strings.Contains(err.Error(), "huggingface") {
 		t.Errorf("error should list every preset, got %v", err)
+	}
+}
+
+// TestMaskingWriter_PassesUnfinishedLineThrough: text of a line that hasn't
+// ended yet is shown right away, except its last few words.
+func TestMaskingWriter_PassesUnfinishedLineThrough(t *testing.T) {
+	mw, buf := newMasker(t, presets("anthropic"))
+	if _, err := mw.Write([]byte("one two three four five")); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); got != "one two " {
+		t.Fatalf("want the line minus its last 3 words shown, got %q", got)
+	}
+	if err := mw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); got != "one two three four five" {
+		t.Errorf("after Flush want the whole line, got %q", got)
+	}
+}
+
+// TestMaskingWriter_SplitSecretsStayMasked: a secret cut across two writes,
+// including multi-word formats and TUI escape codes, never leaks.
+func TestMaskingWriter_SplitSecretsStayMasked(t *testing.T) {
+	cases := []struct {
+		name   string
+		cfg    domain.MaskStdout
+		chunks []string
+		leak   string
+		want   string
+	}{
+		{"token cut mid-word", presets("anthropic"),
+			[]string{"key sk-ant-api03-abcdefghij", "klmnopqrstuvwxyz123 done"},
+			"sk-ant-api03-abcdefghijklmnop", "key sk-ant-*** done"},
+		{"bearer header", presets("bearer"),
+			[]string{"Authorization: Bearer ", "abcdefghijklmnopqrstuvwxyz0123 next"},
+			"abcdefghijklmnopqrstuvwxyz", "Authorization: Bearer *** next"},
+		{"aws secret with spaces", presets("aws_secret"),
+			[]string{"export AWS_SECRET_ACCESS_KEY = ", "wJalrXUtnFEMIK7MDENG more"},
+			"wJalrXUtnFEMIK7MDENG", "AWS_SECRET_ACCESS_KEY ***"},
+		{"between escape codes", presets("anthropic"),
+			[]string{"\x1b[2Cvalue\x1b[1Csk-ant-api03-", "abcdefghijklmnopqrstuvwxyz\x1b[0m"},
+			"abcdefghijklmnopqrstuvwxyz", "sk-ant-***"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mw, buf := newMasker(t, tc.cfg)
+			for _, c := range tc.chunks {
+				if _, err := mw.Write([]byte(c)); err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(buf.String(), tc.leak[:12]) && !strings.Contains(tc.want, tc.leak[:12]) {
+					t.Fatalf("secret start shown before the rest arrived: %q", buf.String())
+				}
+			}
+			if err := mw.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			out := buf.String()
+			if strings.Contains(out, tc.leak) {
+				t.Errorf("secret leaked: %q", out)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("want %q in output, got %q", tc.want, out)
+			}
+		})
+	}
+}
+
+// TestMaskingWriter_LongTailShown: a held tail never grows past maskMaxHold.
+func TestMaskingWriter_LongTailShown(t *testing.T) {
+	mw, buf := newMasker(t, presets("anthropic"))
+	long := strings.Repeat("x", maskMaxHold+1)
+	if _, err := mw.Write([]byte(long)); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() != len(long) {
+		t.Errorf("want %d bytes shown, got %d", len(long), buf.Len())
+	}
+}
+
+// syncBuf is a goroutine-safe buffer that signals each write.
+type syncBuf struct {
+	mu    sync.Mutex
+	b     bytes.Buffer
+	wrote chan struct{}
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, err := s.b.Write(p)
+	select {
+	case s.wrote <- struct{}{}:
+	default:
+	}
+	return n, err
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// TestMaskingWriter_ShowsHeldTailAfterPause: a prompt like "ready> " that
+// waits for input appears (masked) once output pauses, without a newline.
+func TestMaskingWriter_ShowsHeldTailAfterPause(t *testing.T) {
+	out := &syncBuf{wrote: make(chan struct{}, 1)}
+	mw, err := NewMaskingWriter(out, presets("anthropic"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mw.idle = time.Millisecond
+	if _, err := mw.Write([]byte("key sk-ant-api03-abcdefghijklmnopqrstuvwxyz ready> ")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(5 * time.Second)
+	for !strings.HasSuffix(out.String(), "ready> ") {
+		select {
+		case <-out.wrote:
+		case <-deadline:
+			t.Fatalf("held tail never shown, got %q", out.String())
+		}
+	}
+	if got := out.String(); got != "key sk-ant-*** ready> " {
+		t.Errorf("want masked prompt, got %q", got)
+	}
+}
+
+// TestMaskingWriter_KeepsEscapeSequencesWhole: what is shown before the held
+// tail never ends in a bare ESC, so a terminal code isn't split around other
+// output (aigate's own messages share the terminal).
+func TestMaskingWriter_KeepsEscapeSequencesWhole(t *testing.T) {
+	mw, buf := newMasker(t, presets("anthropic"))
+	if _, err := mw.Write([]byte("Run \x1b[50;1Hclaude doctor now please")); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); got != "Run \x1b[50;1Hclaude " {
+		t.Fatalf("want the escape code shown whole with its word, got %q", got)
+	}
+	mw2, buf2 := newMasker(t, presets("anthropic"))
+	if _, err := mw2.Write([]byte("a b c\x1b[50;1Hx y z")); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf2.String(); strings.HasSuffix(got, "\x1b") {
+		t.Errorf("shown part ends with a bare ESC: %q", got)
 	}
 }

@@ -54,6 +54,13 @@ func (s *RunnerService) Run(profile domain.SandboxProfile, cmd string, args []st
 		}
 	}
 
+	if b, hidden := scopeHidesCommand(profile, cmd); hidden {
+		if s.audit != nil {
+			s.audit.LogBlocked(profile, cmd, args, "allowed_paths", "preflight", b.Reason)
+		}
+		return blockedErr{b}
+	}
+
 	stdout, stderr := buildOutputWriters(profile.Config.MaskStdout)
 	if mw, ok := stdout.(*MaskingWriter); ok {
 		defer mw.Flush() //nolint:errcheck

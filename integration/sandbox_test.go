@@ -316,6 +316,53 @@ func TestSandbox_MaskStdout(t *testing.T) {
 	}
 }
 
+// TestSandbox_MaskStdout_PromptWithoutNewline: with masking on, output that
+// doesn't end a line (a shell prompt, a TUI redraw) must still reach the
+// terminal, masked. Masking used to hold it until a newline, which froze
+// interactive tools such as Claude Code.
+func TestSandbox_MaskStdout_PromptWithoutNewline(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping sandbox integration test in short mode")
+	}
+	skipWithoutBwrap(t)
+	bin := buildBinary(t)
+	tmpHome, env := sandboxEnv(t)
+	configPath := filepath.Join(tmpHome, ".aigate", "config.yaml")
+	cfg := "group: ai-agents\nuser: ai-runner\ndeny_read: []\ndeny_exec: []\nallow_net: []\nmask_stdout:\n  presets: [anthropic]\n"
+	if err := os.WriteFile(configPath, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := expect.NewConsole(expect.WithDefaultTimeout(10 * time.Second))
+	if err != nil {
+		t.Fatalf("expect.NewConsole: %v", err)
+	}
+	defer c.Close() //nolint:errcheck
+	fakeKey := "sk-ant-api03-thisisafakekeyfortesting1234567890"
+	cmd := exec.Command(bin, "run", "--", "/bin/sh", "-c", `printf 'key '"$0"' ready> '; read x; echo "got $x"`, fakeKey)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = c.Tty(), c.Tty(), c.Tty()
+	cmd.Env = env
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer cmd.Process.Kill() //nolint:errcheck
+
+	seen, err := c.ExpectString("ready> ")
+	if err != nil {
+		t.Fatalf("prompt without a newline never reached the terminal: %v\nseen: %q", err, seen)
+	}
+	if strings.Contains(seen, fakeKey) {
+		t.Fatalf("secret shown unmasked: %q", seen)
+	}
+	if !strings.Contains(seen, "key sk-ant-*** ready> ") {
+		t.Errorf("expected masked key in prompt, got %q", seen)
+	}
+	sendLine(t, c, "ok")
+	if _, err := c.ExpectString("got ok"); err != nil {
+		t.Fatalf("command did not continue after input: %v", err)
+	}
+}
+
 // TestSandbox_DenyExecSubcommand verifies that subcommand-level deny rules
 // block the specific subcommand but not the base command with other arguments.
 func TestSandbox_DenyExecSubcommand(t *testing.T) {

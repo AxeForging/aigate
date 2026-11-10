@@ -90,7 +90,7 @@ func ExplainPath(profile domain.SandboxProfile, global *domain.Config, raw strin
 	}
 	if len(profile.Config.AllowedPaths) == 0 {
 		return e.set(AccessReadWrite, LayerSandbox, "scope off",
-			"filesystem scope is off, so all of $HOME is reachable", "aigate allow path ~/.cache   # turns scope on")
+			"filesystem scope is off, so all of $HOME is reachable", DefaultScopeFix())
 	}
 	if wd == home {
 		return e.set(AccessReadWrite, LayerSandbox, "scope unenforced", "running from $HOME itself makes all of $HOME the working dir", "cd into a project folder first")

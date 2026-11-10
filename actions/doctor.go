@@ -96,7 +96,7 @@ func (a *DoctorAction) setupChecks(cfg *domain.Config, err error) []services.Che
 		Detail: fmt.Sprintf("%s — %d deny_read, %d deny_exec, %d allow_net, %s", services.TildePath(path),
 			len(cfg.DenyRead), len(cfg.DenyExec), len(cfg.AllowNet), scope)}
 	if len(cfg.AllowedPaths) == 0 {
-		conf.Status, conf.Fix = services.StatusWarn, "aigate allow path ~/.cache   # turns on filesystem scope"
+		conf.Status, conf.Fix = services.StatusWarn, services.DefaultScopeFix()
 	}
 	masks := services.Check{ID: "mask-presets", Group: "Setup", Name: "secret masking", Status: services.StatusOK,
 		Detail: fmt.Sprintf("%d built-in secret formats masked in output", len(cfg.MaskStdout.Presets))}

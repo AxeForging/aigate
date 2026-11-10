@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/AxeForging/aigate/domain"
 )
@@ -64,14 +66,30 @@ type maskRule struct {
 	hints      [][]byte // empty: always run the regex
 }
 
-// MaskingWriter wraps an io.Writer and redacts secrets from each line before
-// forwarding to the underlying writer. It buffers across Write calls so that
-// secrets spanning chunk boundaries on the same line are still caught.
+// MaskingWriter wraps an io.Writer and redacts secrets before forwarding to
+// the underlying writer. Output is passed on as it arrives, so prompts and
+// TUI redraws that never end a line still show. Only the last few words of an
+// unfinished line are held back, so a secret split across two writes is still
+// caught; they are released, masked, once output pauses for maskIdle.
 type MaskingWriter struct {
 	out   io.Writer
 	rules []maskRule
+	idle  time.Duration
+
+	mu    sync.Mutex
 	buf   []byte
+	timer *time.Timer
 }
+
+const (
+	// maskIdle: how long a held tail waits for more output before it is shown.
+	maskIdle = 25 * time.Millisecond
+	// maskHoldWords: words held back at the end of an unfinished line. The
+	// longest preset ("AWS_SECRET_ACCESS_KEY = value") spans three.
+	maskHoldWords = 3
+	// maskMaxHold: a tail longer than this is shown anyway.
+	maskMaxHold = 4096
+)
 
 // NewMaskingWriter builds a MaskingWriter from the given MaskStdout config.
 // Returns (nil, nil) when no presets or patterns are configured — callers
@@ -110,23 +128,29 @@ func NewMaskingWriter(out io.Writer, cfg domain.MaskStdout) (*MaskingWriter, err
 	if len(rules) == 0 {
 		return nil, nil
 	}
-	return &MaskingWriter{out: out, rules: rules}, nil
+	return &MaskingWriter{out: out, rules: rules, idle: maskIdle}, nil
 }
 
-// Write buffers p, flushes complete lines through the redactor, and returns
-// len(p) so callers treat the write as fully consumed.
+// Write redacts and forwards complete lines and everything of an unfinished
+// line except its last few words, and returns len(p).
 func (m *MaskingWriter) Write(p []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.buf = append(m.buf, p...)
 	for {
 		idx := bytes.IndexByte(m.buf, '\n')
 		if idx < 0 {
 			break
 		}
-		line := m.buf[:idx+1]
-		if _, err := m.out.Write(m.redact(line)); err != nil {
+		if err := m.emit(idx + 1); err != nil {
 			return 0, err
 		}
-		m.buf = m.buf[idx+1:]
+	}
+	if err := m.emit(m.safeSplit()); err != nil {
+		return 0, err
+	}
+	if len(m.buf) > 0 {
+		m.armIdle()
 	}
 	return len(p), nil
 }
@@ -134,13 +158,86 @@ func (m *MaskingWriter) Write(p []byte) (int, error) {
 // Flush writes any remaining buffered bytes (last line without a trailing newline).
 // Call this after the child process exits.
 func (m *MaskingWriter) Flush() error {
-	if len(m.buf) == 0 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.timer != nil {
+		m.timer.Stop()
+	}
+	return m.emit(len(m.buf))
+}
+
+// emit redacts and writes buf[:n], keeping the rest.
+func (m *MaskingWriter) emit(n int) error {
+	if n <= 0 {
 		return nil
 	}
-	_, err := m.out.Write(m.redact(m.buf))
-	m.buf = m.buf[:0]
+	_, err := m.out.Write(m.redact(m.buf[:n]))
+	m.buf = append(m.buf[:0], m.buf[n:]...)
 	return err
 }
+
+// safeSplit is how much of an unfinished line can be shown now: up to its
+// last few words, and never cutting through text a rule already matches
+// (e.g. "AWS_SECRET_ACCESS_KEY = value" where the value has just arrived).
+func (m *MaskingWriter) safeSplit() int {
+	split := holdFrom(m.buf)
+	for moved := true; moved && split > 0; {
+		moved = false
+		for _, rule := range m.rules {
+			if !rule.mayMatch(m.buf) {
+				continue
+			}
+			for _, loc := range rule.re.FindAllIndex(m.buf, -1) {
+				if loc[0] < split && loc[1] > split {
+					split, moved = loc[0], true
+				}
+			}
+		}
+	}
+	return split
+}
+
+func (m *MaskingWriter) armIdle() {
+	if m.timer == nil {
+		m.timer = time.AfterFunc(m.idle, func() {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			_ = m.emit(len(m.buf))
+		})
+		return
+	}
+	m.timer.Reset(m.idle)
+}
+
+// holdFrom returns where the held-back tail of an unfinished line starts: the
+// beginning of its last maskHoldWords words. Whitespace and control bytes
+// (including the escape sequences TUIs draw with) separate words.
+func holdFrom(line []byte) int {
+	if len(line) > maskMaxHold {
+		return len(line)
+	}
+	words, i := 0, len(line)
+	for i > 0 {
+		for i > 0 && isMaskSeparator(line[i-1]) {
+			i--
+		}
+		if i == 0 {
+			break
+		}
+		for i > 0 && !isMaskSeparator(line[i-1]) {
+			i--
+		}
+		if i > 0 && line[i-1] == 0x1b { // keep an escape sequence whole
+			i--
+		}
+		if words++; words == maskHoldWords {
+			break
+		}
+	}
+	return i
+}
+
+func isMaskSeparator(b byte) bool { return b <= ' ' || b == 0x7f }
 
 // redact applies all masking rules to a single line.
 func (m *MaskingWriter) redact(line []byte) []byte {
