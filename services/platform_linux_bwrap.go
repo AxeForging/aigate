@@ -377,6 +377,7 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 		return abort(fmt.Errorf("bwrap info-fd: %w", err))
 	}
 
+	waitLoopback(childPID, 2*time.Second)
 	sandboxNet, err := openSandboxNet(childPID)
 	if err != nil {
 		return abort(fmt.Errorf("sandbox network: %w", err))
@@ -441,6 +442,32 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 		helpers.Log.Debug().Str("slirp4netns", slirp.String()).Msg("network helper output")
 	}
 	return bwrapErr
+}
+
+// waitLoopback waits until bwrap has brought up the sandbox's loopback.
+// slirp4netns --configure also brings lo up; both at once intermittently
+// fails bwrap with "loopback: Failed RTM_NEWADDR" on slower machines.
+// Gives up quietly after timeout: slirp's own setup still applies.
+func waitLoopback(pid int, timeout time.Duration) {
+	path := fmt.Sprintf("/proc/%d/net/fib_trie", pid)
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if b, err := os.ReadFile(path); err == nil && loopbackUp(string(b)) {
+			return
+		}
+	}
+	helpers.Log.Debug().Int("pid", pid).Msg("sandbox loopback not seen up; starting slirp4netns anyway")
+}
+
+// loopbackUp reports whether fib_trie has 127.0.0.1 as a local address,
+// which the kernel adds once lo has the address and is up.
+func loopbackUp(fibTrie string) bool {
+	lines := strings.Split(fibTrie, "\n")
+	for i, l := range lines {
+		if strings.TrimSpace(l) == "|-- 127.0.0.1" && i+1 < len(lines) && strings.Contains(lines[i+1], "/32 host LOCAL") {
+			return true
+		}
+	}
+	return false
 }
 
 // startSlirp attaches slirp4netns to the sandbox's network namespace and

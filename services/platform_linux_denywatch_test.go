@@ -36,3 +36,30 @@ func TestLateDenyWatch(t *testing.T) {
 		}
 	}
 }
+
+func TestLoopbackUp(t *testing.T) {
+	up := `Main:
+  +-- 127.0.0.0/8 2 0 2
+     +-- 127.0.0.0/31 1 0 0
+        |-- 127.0.0.0
+           /8 host LOCAL
+        |-- 127.0.0.1
+           /32 host LOCAL
+     |-- 127.255.255.255
+        /32 link BROADCAST
+`
+	cases := map[string]struct {
+		in   string
+		want bool
+	}{
+		"lo up":                  {up, true},
+		"fresh namespace":        {"Main:\nLocal:\n", false},
+		"address, not local yet": {"Main:\n        |-- 127.0.0.1\n           /8 host UNICAST\n", false},
+		"empty":                  {"", false},
+	}
+	for name, c := range cases {
+		if got := loopbackUp(c.in); got != c.want {
+			t.Errorf("%s: loopbackUp = %v, want %v", name, got, c.want)
+		}
+	}
+}
