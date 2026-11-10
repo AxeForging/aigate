@@ -101,6 +101,14 @@ function list(name, items, empty) {
       ${open ? 'Show fewer' : `Show all ${items.length}`}</button></li>` : '');
 }
 
+// keepFocus re-renders without losing keyboard focus on a toggle: the
+// button with the same data-key gets focus back.
+function keepFocus(render) {
+  const key = document.activeElement?.closest('[data-action="toggle"]')?.dataset.key;
+  render();
+  if (key) document.querySelector(`[data-action="toggle"][data-key="${CSS.escape(key)}"]`)?.focus();
+}
+
 function renderPolicy() {
   const rules = state.rules;
   list('deny-read', rules.deny_read, 'none');
@@ -247,7 +255,7 @@ function toggleOpen(key) {
   if (state.open.has(key)) state.open.delete(key);
   else state.open.add(key);
   if (key.startsWith('list:')) {
-    renderPolicy();
+    keepFocus(renderPolicy);
     return;
   }
   const row = document.querySelector(`.decision[data-key="${CSS.escape(key)}"]`);
@@ -349,14 +357,14 @@ async function refresh() {
     setText('[data-field="rule-net"]', (rules.allow_net || []).length);
     setText('[data-field="rule-scope"]', (rules.allowed_paths || []).length);
     state.rules = rules;
-    renderPolicy();
+    keepFocus(renderPolicy);
     renderBars(data.counters.by_rule);
     renderLatest(data.last_blocked);
     renderSpark(data.events || []);
     state.decisions = decisions.decisions || [];
     renderIdentities(identities);
     renderIdentityOptions(identities.identities || []);
-    applyFilters();
+    keepFocus(applyFilters);
     markSynced();
   } catch (err) {
     console.error('aigate dashboard refresh failed:', err);

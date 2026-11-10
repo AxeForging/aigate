@@ -331,7 +331,8 @@ button, input, select { font: inherit; color: inherit; }
 
 .link-btn {
   justify-self: start;
-  padding: 2px 0;
+  min-height: 32px; /* comfortable tap target */
+  padding: 0 2px;
   border: 0;
   background: none;
   color: var(--accent);
