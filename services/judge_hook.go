@@ -121,6 +121,9 @@ func HookOutput(call Call, v Verdict, howToAllow string) []byte {
 	}
 	what := strings.TrimSpace(call.Tool + " " + oneLine(call.Target, 120))
 	msg := Block{What: what, Layer: LayerJudge, Reason: fmt.Sprintf("%s (%s)", v.Reason, v.Judge), Fix: howToAllow}.String()
+	if v.Outcome == Ask { // Claude Code shows a Yes/No prompt right under this
+		msg = fmt.Sprintf("[aigate] judge wants your OK: %s — %s (%s). Answer Yes to run it this once, or No to stop it.", what, v.Reason, v.Judge)
+	}
 	out, _ := json.Marshal(map[string]any{
 		"hookSpecificOutput": map[string]any{
 			"hookEventName":            "PreToolUse",
