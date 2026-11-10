@@ -133,4 +133,7 @@ type SandboxProfile struct {
 	// UnsetEnv are extra variables removed inside the sandbox (e.g. judge
 	// provider credentials, which must stay outside).
 	UnsetEnv []string
+	// Ports are published from the sandbox to the host's 127.0.0.1 (Linux
+	// with its own network namespace; elsewhere the network is shared).
+	Ports []int
 }

@@ -45,6 +45,11 @@ var allowPathFlag = cli.StringSliceFlag{
 	Usage: "Session-only scope path (repeatable); with scope active, only the workdir and allowed paths are accessible",
 }
 
+var portFlag = cli.StringSliceFlag{
+	Name:  "port",
+	Usage: "Make a server started inside reachable at localhost:PORT on your machine (repeatable), e.g. --port 3000",
+}
+
 var upgradeFlag = cli.BoolFlag{
 	Name:  "upgrade",
 	Usage: "Add protections that are new in this aigate version to your existing config (your own rules stay)",

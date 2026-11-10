@@ -3,7 +3,6 @@
 package services
 
 import (
-	"bufio"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -183,15 +182,22 @@ func (p *LinuxPlatform) RunSandboxed(profile domain.SandboxProfile, cmd string, 
 	if problem := DetectUsernsProblem(); problem != nil {
 		return problem
 	}
-	if len(profile.Config.AllowNet) > 0 {
-		if hasSlirp4netns() {
-			if hasBwrap() {
-				return p.runWithBwrapNetFilter(profile, cmd, args, stdout, stderr)
-			}
-			return p.runWithNetFilter(profile, cmd, args, stdout, stderr)
+	// Own network namespace whenever possible, allow_net or not: services on
+	// the host's 127.0.0.1 and abstract unix sockets (X11, session helpers)
+	// stay outside. allow_net adds a firewall on top.
+	if hasSlirp4netns() {
+		if hasBwrap() {
+			return p.runWithBwrapNetFilter(profile, cmd, args, stdout, stderr)
 		}
-		helpers.Log.Warn().Msg("slirp4netns not found; network filtering unavailable, running without network restrictions")
+		if len(profile.Ports) > 0 {
+			return portsNeedBwrap()
+		}
+		return p.runWithNetFilter(profile, cmd, args, stdout, stderr)
 	}
+	if len(profile.Config.AllowNet) > 0 {
+		return NoSlirpBlock()
+	}
+	fmt.Fprintln(os.Stderr, "[aigate] warning: slirp4netns not found — this session shares your network, so services on 127.0.0.1 and desktop sockets are reachable. Install slirp4netns to isolate them.")
 	if hasBwrap() {
 		return p.runWithBwrap(profile, cmd, args, stdout, stderr)
 	}
@@ -211,10 +217,17 @@ func (p *LinuxPlatform) runUnshare(profile domain.SandboxProfile, cmd string, ar
 		"--",
 	}
 
+	stage, cleanup, err := stageSandboxExec()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
 	var sb strings.Builder
 	// Ensure inherited mounts are private so bind mounts work in all environments.
 	// Modern unshare --mount does this (util-linux 2.27+), but be explicit for safety.
 	sb.WriteString("mount --make-rprivate / 2>/dev/null || true\n")
+	sb.WriteString(stage.bindScript())
 	sb.WriteString(buildPolicyFile(profile))
 	sb.WriteString(buildScopeOverrides(profile))
 	sb.WriteString(buildConfigDirOverride())
@@ -222,9 +235,7 @@ func (p *LinuxPlatform) runUnshare(profile domain.SandboxProfile, cmd string, ar
 	sb.WriteString(buildExecDenyOverrides(profile))
 	sb.WriteString(buildIdentityOverrides(profile))
 	sb.WriteString(buildAgentOverrides())
-	sb.WriteString("exec ")
-	sb.WriteString(shellEscape(cmd, args))
-	sb.WriteString("\n")
+	sb.WriteString(execAsCommand(stage.dst, profile.WorkDir, cmd, args))
 
 	fullArgs := append(unshareArgs, "sh", "-c", sb.String())
 	return p.exec.RunPassthroughWith(stdout, stderr, "unshare", fullArgs...)
@@ -238,7 +249,7 @@ func hasSlirp4netns() bool {
 
 // hasIp6tables checks whether ip6tables is available on the system.
 func hasIp6tables() bool {
-	_, err := exec.LookPath("ip6tables")
+	_, err := iptablesTool(true, "-restore")
 	return err == nil
 }
 
@@ -294,65 +305,6 @@ func resolveAllowedIPs(hosts []string) []string {
 	return result
 }
 
-// getSystemDNS reads upstream DNS servers from resolv.conf files.
-func getSystemDNS() []string {
-	// Try systemd-resolved upstream file first, then fall back to /etc/resolv.conf
-	for _, path := range []string{"/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"} {
-		servers := parseDNSFromFile(path)
-		if len(servers) > 0 {
-			return servers
-		}
-	}
-	return []string{"8.8.8.8", "1.1.1.1"}
-}
-
-func parseDNSFromFile(path string) []string {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close() //nolint:errcheck
-
-	var servers []string
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "nameserver") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		addr := fields[1]
-		// Skip localhost/stub resolvers
-		if strings.HasPrefix(addr, "127.") {
-			continue
-		}
-		servers = append(servers, addr)
-	}
-	return servers
-}
-
-// splitDNSByFamily partitions a nameserver list into IPv4 and IPv6 buckets.
-// Non-parseable entries are dropped (resolv.conf shouldn't have them, but
-// defend anyway — we'd otherwise feed them to iptables and produce shell
-// errors like "host/network 'foo' not found", see issue #8).
-func splitDNSByFamily(servers []string) (v4, v6 []string) {
-	for _, s := range servers {
-		ip := net.ParseIP(s)
-		if ip == nil {
-			continue
-		}
-		if ip.To4() != nil {
-			v4 = append(v4, s)
-		} else {
-			v6 = append(v6, s)
-		}
-	}
-	return v4, v6
-}
-
 // runWithNetFilter runs a command in a network-filtered namespace using slirp4netns.
 //
 // Architecture (two-layer unshare):
@@ -369,19 +321,18 @@ func (p *LinuxPlatform) runWithNetFilter(profile domain.SandboxProfile, cmd stri
 	if err := checkFallbackIdentity(profile); err != nil {
 		return err
 	}
-	dnsV4, dnsV6 := splitDNSByFamily(getSystemDNS())
 	ipv6Enabled := ipv6SandboxSupported()
-	if !ipv6Enabled {
-		dnsV6 = nil
-	}
-	helpers.Log.Info().
+	helpers.Log.Debug().
 		Strs("allow_net", profile.Config.AllowNet).
-		Strs("dns_servers_v4", dnsV4).
-		Strs("dns_servers_v6", dnsV6).
 		Bool("ipv6", ipv6Enabled).
-		Msg("starting network-filtered sandbox")
+		Msg("starting sandbox with its own network namespace")
 
-	innerScript := buildNetFilterScript(profile.Config.AllowNet, dnsV4, dnsV6, ipv6Enabled, profile, cmd, args)
+	stage, cleanup, err := stageSandboxExec()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	innerScript := buildNetFilterScript(profile.Config.AllowNet, ipv6Enabled, profile, stage, cmd, args)
 	outerScript := buildOrchestrationScript(innerScript, ipv6Enabled)
 
 	return p.exec.RunPassthroughWith(stdout, stderr, "unshare", "--user", "--map-root-user", "--", "sh", "-c", outerScript)
@@ -417,11 +368,11 @@ func buildOrchestrationScript(innerScript string, ipv6Enabled bool) string {
 	sb.WriteString("while [ -e \"/proc/$_SANDBOX_PID\" ] && [ \"$(readlink /proc/$_SANDBOX_PID/ns/net 2>/dev/null)\" = \"$_SELF_NS\" ]; do sleep 0.01; done\n")
 
 	// Launch slirp4netns: runs in user ns (has CAP_SYS_ADMIN) + host network.
-	// Suppress stdout (verbose protocol debug), keep stderr for real errors.
+	// Its output is protocol chatter; a failed start shows up as no network.
 	if ipv6Enabled {
-		sb.WriteString("slirp4netns --enable-ipv6 --configure $_SANDBOX_PID tap0 >/dev/null &\n")
+		sb.WriteString("slirp4netns --disable-host-loopback --enable-ipv6 --configure $_SANDBOX_PID tap0 >/dev/null 2>&1 &\n")
 	} else {
-		sb.WriteString("slirp4netns --configure $_SANDBOX_PID tap0 >/dev/null &\n")
+		sb.WriteString("slirp4netns --disable-host-loopback --configure $_SANDBOX_PID tap0 >/dev/null 2>&1 &\n")
 	}
 	sb.WriteString("_SLIRP_PID=$!\n")
 
@@ -454,18 +405,23 @@ func writeResolvConf(sb *strings.Builder, ipv6Enabled bool) {
 	sb.WriteString("mount --bind /tmp/.aigate-resolv $(readlink -f /etc/resolv.conf) 2>/dev/null || true\n")
 }
 
+// slirpDNSv4 and slirpDNSv6 are slirp4netns' DNS forwarders: the only DNS
+// servers the sandbox talks to (resolv.conf points there). Allowing the host's
+// own DNS servers, or port 53 anywhere, would open a path around allow_net.
+const (
+	slirpDNSv4 = "10.0.2.3"
+	slirpDNSv6 = "fd00::3"
+)
+
 // writeIPv4Rules emits the iptables OUTPUT chain that the sandbox enforces:
-// loopback + DNS port + allowed DNS servers + per-host allow_net (resolved via
+// loopback + DNS to the slirp forwarder + per-host allow_net (resolved via
 // getent inside the namespace) + final REJECT.
 //
 // Layout matches the v6 mirror in writeIPv6Rules — keep them in sync.
-func writeIPv4Rules(sb *strings.Builder, allowNetHosts, dnsServers []string) {
+func writeIPv4Rules(sb *strings.Builder, allowNetHosts []string) {
 	sb.WriteString("iptables -A OUTPUT -o lo -j ACCEPT\n")
-	sb.WriteString("iptables -A OUTPUT -p udp --dport 53 -j ACCEPT\n")
-	sb.WriteString("iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT\n")
-	for _, dns := range dnsServers {
-		fmt.Fprintf(sb, "iptables -A OUTPUT -d %s -j ACCEPT\n", dns)
-	}
+	fmt.Fprintf(sb, "iptables -A OUTPUT -d %s -p udp --dport 53 -j ACCEPT\n", slirpDNSv4)
+	fmt.Fprintf(sb, "iptables -A OUTPUT -d %s -p tcp --dport 53 -j ACCEPT\n", slirpDNSv4)
 	// Wait for DNS to actually work by testing a REAL remote query.
 	// Using localhost previously was wrong — it resolves from /etc/hosts,
 	// not DNS, so it passed before slirp4netns DNS (10.0.2.3) was ready.
@@ -479,6 +435,19 @@ func writeIPv4Rules(sb *strings.Builder, allowNetHosts, dnsServers []string) {
 		fmt.Fprintf(sb, "for _attempt in 1 2 3; do _ips=$(getent ahostsv4 %q 2>/dev/null | awk '{print $1}' | sort -u); [ -n \"$_ips\" ] && break; sleep 0.5; done; for _ip in $_ips; do iptables -A OUTPUT -d \"$_ip\" -j ACCEPT; done\n", host)
 	}
 	sb.WriteString("iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited\n")
+	writeFirewallGuard(sb, "iptables -C OUTPUT -j REJECT --reject-with icmp-admin-prohibited")
+}
+
+// writeFirewallGuard stops the run when the final REJECT isn't in place
+// (e.g. iptables lacked permission): allow_net must never silently go
+// unenforced.
+func writeFirewallGuard(sb *strings.Builder, check string) {
+	msg := Block{
+		What: "this run", Layer: LayerSandbox,
+		Reason: "the allow_net firewall could not be set up inside the sandbox",
+		Fix:    "run aigate doctor to see what's missing",
+	}.String()
+	fmt.Fprintf(sb, "%s 2>/dev/null || { echo %s >&2; exit 126; }\n", check, shellQuote(msg))
 }
 
 // writeIPv6Rules emits the ip6tables OUTPUT chain. Mirrors writeIPv4Rules but
@@ -487,13 +456,10 @@ func writeIPv4Rules(sb *strings.Builder, allowNetHosts, dnsServers []string) {
 //
 // Only called when ipv6SandboxSupported() == true — otherwise the sandbox is
 // v4-only and v6 egress is unreachable via slirp4netns anyway.
-func writeIPv6Rules(sb *strings.Builder, allowNetHosts, dnsServers []string) {
+func writeIPv6Rules(sb *strings.Builder, allowNetHosts []string) {
 	sb.WriteString("ip6tables -A OUTPUT -o lo -j ACCEPT\n")
-	sb.WriteString("ip6tables -A OUTPUT -p udp --dport 53 -j ACCEPT\n")
-	sb.WriteString("ip6tables -A OUTPUT -p tcp --dport 53 -j ACCEPT\n")
-	for _, dns := range dnsServers {
-		fmt.Fprintf(sb, "ip6tables -A OUTPUT -d %s -j ACCEPT\n", dns)
-	}
+	fmt.Fprintf(sb, "ip6tables -A OUTPUT -d %s -p udp --dport 53 -j ACCEPT\n", slirpDNSv6)
+	fmt.Fprintf(sb, "ip6tables -A OUTPUT -d %s -p tcp --dport 53 -j ACCEPT\n", slirpDNSv6)
 	if len(allowNetHosts) > 0 {
 		// v6 DNS readiness probe. We don't wait here if the host has no AAAA —
 		// resolution simply returns empty and no ip6tables rules get added,
@@ -505,6 +471,7 @@ func writeIPv6Rules(sb *strings.Builder, allowNetHosts, dnsServers []string) {
 		fmt.Fprintf(sb, "for _attempt in 1 2 3; do _ips=$(getent ahostsv6 %q 2>/dev/null | awk '{print $1}' | sort -u); [ -n \"$_ips\" ] && break; sleep 0.5; done; for _ip in $_ips; do ip6tables -A OUTPUT -d \"$_ip\" -j ACCEPT; done\n", host)
 	}
 	sb.WriteString("ip6tables -A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited\n")
+	writeFirewallGuard(sb, "ip6tables -C OUTPUT -j REJECT --reject-with icmp6-adm-prohibited")
 }
 
 // buildNetFilterScript builds the shell script that runs inside the network namespace.
@@ -515,7 +482,7 @@ func writeIPv6Rules(sb *strings.Builder, allowNetHosts, dnsServers []string) {
 // loopback + DNS port 53 + dnsServersV6 + AAAA-resolved allowNetHosts + final
 // REJECT. ipv6Enabled must only be set when the caller has verified ip6tables
 // is available — a partial v6 ruleset is worse than none.
-func buildNetFilterScript(allowNetHosts, dnsServersV4, dnsServersV6 []string, ipv6Enabled bool, profile domain.SandboxProfile, cmd string, args []string) string {
+func buildNetFilterScript(allowNetHosts []string, ipv6Enabled bool, profile domain.SandboxProfile, stage sandboxExecStage, cmd string, args []string) string {
 	var sb strings.Builder
 
 	// Ensure inherited mounts are private so bind mounts work in all environments.
@@ -526,12 +493,8 @@ func buildNetFilterScript(allowNetHosts, dnsServersV4, dnsServersV6 []string, ip
 	// "fatal library error, lookup self".
 	sb.WriteString("mount -t proc proc /proc\n")
 
-	writeWaitForTap0(&sb)
-	writeResolvConf(&sb, ipv6Enabled)
-	writeIPv4Rules(&sb, allowNetHosts, dnsServersV4)
-	if ipv6Enabled {
-		writeIPv6Rules(&sb, allowNetHosts, dnsServersV6)
-	}
+	sb.WriteString(stage.bindScript())
+	writeNetSetup(&sb, allowNetHosts, ipv6Enabled)
 
 	// Write policy file + mount overrides (deny_read markers point here)
 	sb.WriteString(buildPolicyFile(profile))
@@ -541,12 +504,7 @@ func buildNetFilterScript(allowNetHosts, dnsServersV4, dnsServersV6 []string, ip
 	sb.WriteString(buildExecDenyOverrides(profile))
 	sb.WriteString(buildIdentityOverrides(profile))
 	sb.WriteString(buildAgentOverrides())
-
-	// Execute the target command
-	sb.WriteString("exec ")
-	sb.WriteString(shellEscape(cmd, args))
-	sb.WriteString("\n")
-
+	sb.WriteString(execAsCommand(stage.dst, profile.WorkDir, cmd, args))
 	return sb.String()
 }
 

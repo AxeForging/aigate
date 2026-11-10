@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/AxeForging/aigate/domain"
@@ -44,6 +45,9 @@ func (a *RunAction) Execute(c *cli.Context) error {
 		return err
 	}
 	merged, identity := &profile.Config, profile.Identity
+	if profile.Ports, err = parsePorts(c.StringSlice("port")); err != nil {
+		return err
+	}
 	judgeOff, err := judgeOffForRun(a.configSvc, c.String("judge"), &profile)
 	if err != nil {
 		return err
@@ -68,6 +72,9 @@ func (a *RunAction) Execute(c *cli.Context) error {
 
 	printIdentityBanner(globalCfg, identity)
 	printSandboxBanner(merged, workDir)
+	for _, port := range profile.Ports {
+		fmt.Fprintf(os.Stderr, "[aigate] port %d: a server the agent starts on it opens at http://localhost:%d\n", port, port)
+	}
 
 	return a.runner.Run(profile, cmd, cmdArgs)
 }
@@ -183,4 +190,19 @@ func printSandboxBanner(cfg *domain.Config, workDir string) {
 		}
 		fmt.Fprintf(os.Stderr, "[aigate] mask_stdout: %s\n", strings.Join(parts, "; "))
 	}
+}
+
+// parsePorts reads --port values (1–65535, no duplicates).
+func parsePorts(raw []string) ([]int, error) {
+	var ports []int
+	for _, r := range raw {
+		p, err := strconv.Atoi(strings.TrimSpace(r))
+		if err != nil || p < 1 || p > 65535 {
+			return nil, fmt.Errorf("--port %q: want a port number from 1 to 65535, e.g. --port 3000", r)
+		}
+		if !slices.Contains(ports, p) {
+			ports = append(ports, p)
+		}
+	}
+	return ports, nil
 }

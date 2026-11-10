@@ -88,3 +88,32 @@ func TestDoctor_ReportIsSafeToPaste(t *testing.T) {
 	}
 	mustContain(t, out, "Verdict:", "~/.aigate/config.yaml")
 }
+
+// TestDoctor_TestsTheAllowNetFirewall: on Linux with slirp4netns, doctor
+// installs a real allow_net firewall in a test sandbox and reports it; when
+// that's impossible it fails with a fix instead of letting sessions find out.
+func TestDoctor_TestsTheAllowNetFirewall(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs a sandbox")
+	}
+	skipWithoutBwrap(t)
+	if _, err := exec.LookPath("slirp4netns"); err != nil {
+		t.Skip("slirp4netns not found")
+	}
+	bin := buildBinary(t)
+	home := cliHome(t, identityCLIConfig)
+	out, _ := doctor(t, bin, home, nil, "--json")
+	var d doctorJSON
+	if err := json.Unmarshal([]byte(out), &d); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	for _, c := range d.Checks {
+		if c.ID == "allow-net-firewall" {
+			if c.Status != "ok" && (c.Status != "fail" || c.Fix == "") {
+				t.Errorf("want ok, or fail with a fix; got %+v", c)
+			}
+			return
+		}
+	}
+	t.Errorf("no allow-net-firewall check in:\n%s", out)
+}

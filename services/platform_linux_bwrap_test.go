@@ -3,8 +3,12 @@
 package services
 
 import (
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -690,6 +694,9 @@ func TestRunSandboxedDispatch_BwrapPreferredOverUnshare(t *testing.T) {
 	if !hasBwrap() {
 		t.Skip("bwrap not installed; test covers bwrap dispatch path only")
 	}
+	// Without slirp4netns there's no own network namespace: plain bwrap.
+	pathOnly(t, "bwrap")
+	skipIfBwrapBlockedOnPath(t)
 	mock := newMockExecutor()
 	p := &LinuxPlatform{exec: mock}
 	profile := domain.SandboxProfile{Config: domain.Config{}, WorkDir: "/tmp"}
@@ -724,204 +731,124 @@ func TestRunSandboxedDispatch_FallsBackToUnshareWhenNoBwrap(t *testing.T) {
 	}
 }
 
-// ── buildNetOnlyScript ───────────────────────────────────────────────────────
-
-func TestBuildNetOnlyScript_HasNetworkSetup(t *testing.T) {
-	script := buildNetOnlyScript(nil, nil, nil, false, "echo", []string{"hello"})
-
-	for _, want := range []string{
-		"mount --make-rprivate /",
-		"ip addr show tap0",
-		"nameserver 10.0.2.3",
-		"iptables -A OUTPUT -o lo -j ACCEPT",
-		"iptables -A OUTPUT -j REJECT",
-		"exec echo hello",
-	} {
-		if !strings.Contains(script, want) {
-			t.Errorf("buildNetOnlyScript should contain %q, got:\n%s", want, script)
-		}
-	}
-}
-
-func TestBuildNetOnlyScript_HasNoAigateMarkers(t *testing.T) {
-	// bwrap handles policy/mount/exec isolation — the net-only script should not.
-	script := buildNetOnlyScript(nil, nil, nil, false, "echo", nil)
-
-	for _, forbidden := range []string{
-		"aigate-policy",
-		"aigate-denied",
-		"aigate-deny-exec",
-	} {
-		if strings.Contains(script, forbidden) {
-			t.Errorf("buildNetOnlyScript should NOT contain %q (bwrap handles this), got:\n%s", forbidden, script)
-		}
-	}
-}
-
-func TestBuildNetOnlyScript_AllowNetRules(t *testing.T) {
-	script := buildNetOnlyScript(
-		[]string{"api.anthropic.com", "1.2.3.4"},
-		[]string{"8.8.8.8"},
-		nil, false,
-		"echo", nil,
-	)
-
-	if !strings.Contains(script, `getent ahostsv4 "api.anthropic.com"`) {
-		t.Error("should resolve api.anthropic.com via getent inside namespace")
-	}
-	if !strings.Contains(script, `getent ahostsv4 "1.2.3.4"`) {
-		t.Error("should include raw IP via getent")
-	}
-	if !strings.Contains(script, "iptables -A OUTPUT -d 8.8.8.8 -j ACCEPT") {
-		t.Error("should allow upstream DNS server 8.8.8.8")
-	}
-	if !strings.Contains(script, "iptables -A OUTPUT -p udp --dport 53 -j ACCEPT") {
-		t.Error("should allow UDP DNS")
-	}
-}
-
-// IPv6 path through the bwrap net-only script. Mirrors the v4 assertions plus
-// the fd00::3 forwarder and ip6tables REJECT.
-func TestBuildNetOnlyScript_IPv6Rules(t *testing.T) {
-	script := buildNetOnlyScript(
-		[]string{"api.anthropic.com"},
-		[]string{"8.8.8.8"},
-		[]string{"2001:4860:4860::8888"},
-		true,
-		"echo", nil,
-	)
-	for _, want := range []string{
-		"nameserver fd00::3",
-		"ip6tables -A OUTPUT -o lo -j ACCEPT",
-		"ip6tables -A OUTPUT -d 2001:4860:4860::8888 -j ACCEPT",
-		`getent ahostsv6 "api.anthropic.com"`,
-		"ip6tables -A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited",
-	} {
-		if !strings.Contains(script, want) {
-			t.Errorf("script should contain %q, got:\n%s", want, script)
-		}
-	}
-}
-
-// Guards against partial-v6 leakage: when ipv6Enabled=false the script must
-// be 100% v4 — no ip6tables, no fd00::3, no ahostsv6.
-func TestBuildNetOnlyScript_NoIPv6WhenDisabled(t *testing.T) {
-	script := buildNetOnlyScript(
-		[]string{"api.anthropic.com"},
-		[]string{"8.8.8.8"},
-		[]string{"2001:4860:4860::8888"}, // present but should be ignored
-		false,
-		"echo", nil,
-	)
-	for _, forbidden := range []string{"ip6tables", "fd00::3", "ahostsv6", "2001:4860"} {
-		if strings.Contains(script, forbidden) {
-			t.Errorf("ipv6Enabled=false must not include %q, got:\n%s", forbidden, script)
-		}
-	}
-}
-
-func TestBuildNetOnlyScript_ArgWithSpaces(t *testing.T) {
-	// Verify that shellEscape fix propagates: args with spaces are quoted.
-	script := buildNetOnlyScript(nil, nil, nil, false, "python3", []string{"my script.py"})
-	if !strings.Contains(script, "'my script.py'") {
-		t.Errorf("arg with spaces should be single-quoted in net-only script, got:\n%s", script)
-	}
-}
-
-// ── appendBwrapNetArgs / runWithBwrapNetFilter ───────────────────────────────
+// ── own network: bwrap args, firewall rules, host-side resolution ──────────
 //
-// runWithBwrapNetFilter uses exec.Command directly (not the mock Executor)
-// because it needs Start/Wait + ExtraFiles for the info-fd pipe. Tests verify
-// the arg construction helpers rather than the executor call.
+// runWithBwrapNetFilter needs Start/Wait + ExtraFiles, so it uses exec.Command
+// directly; the integration tests (integration/privilege_test.go) drive it for
+// real. These cover the pure pieces.
 
-func TestAppendBwrapNetArgs_HasUnshareNetAndInfoFd(t *testing.T) {
-	args := appendBwrapNetArgs(nil, []string{"example.com"}, []string{"8.8.8.8"}, nil, false, "echo", []string{"hi"})
-
-	if !containsFlag(args, "--unshare-net") {
-		t.Errorf("args should contain --unshare-net, got: %v", args)
+func TestAppendBwrapNetArgs_RunsCommandDirectlyAfterBlockFd(t *testing.T) {
+	args := appendBwrapNetArgs([]string{"--ro-bind", "/", "/"}, "echo", []string{"my arg"})
+	want := []string{"--ro-bind", "/", "/", "--unshare-net", "--info-fd", "3", "--block-fd", "4", "--", "echo", "my arg"}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Errorf("args = %q, want %q", args, want)
 	}
-	if !containsPair(args, "--info-fd", "3") {
-		t.Errorf("args should contain --info-fd 3, got: %v", args)
+	// No setup shell and no extra privileges inside: the host side configures
+	// the network before releasing block-fd.
+	for _, forbidden := range []string{"--cap-add", "--uid", "sh", "-c"} {
+		if slices.Contains(args[:len(args)-2], forbidden) {
+			t.Errorf("args must not contain %q: %v", forbidden, args)
+		}
 	}
 }
 
-func TestAppendBwrapNetArgs_InnerScriptPassedToSh(t *testing.T) {
-	args := appendBwrapNetArgs(nil, []string{"example.com"}, nil, nil, false, "echo", []string{"hello"})
-
-	sepIdx := -1
-	for i, a := range args {
-		if a == "--" {
-			sepIdx = i
+func TestFirewallRules(t *testing.T) {
+	t.Run("allow_net: lo, DNS only to slirp, listed hosts, then reject", func(t *testing.T) {
+		got := firewallRules(false, firewallSpec{allowIPs: []string{"1.2.3.4"}, filter: true})
+		want := "*filter\n:INPUT ACCEPT [0:0]\n:FORWARD ACCEPT [0:0]\n:OUTPUT ACCEPT [0:0]\n" +
+			"-A OUTPUT -o lo -j ACCEPT\n" +
+			"-A OUTPUT -d 10.0.2.3 -p udp --dport 53 -j ACCEPT\n" +
+			"-A OUTPUT -d 10.0.2.3 -p tcp --dport 53 -j ACCEPT\n" +
+			"-A OUTPUT -d 1.2.3.4 -j ACCEPT\n" +
+			"-A OUTPUT -j REJECT --reject-with icmp-admin-prohibited\nCOMMIT\n"
+		if got != want {
+			t.Errorf("got:\n%s\nwant:\n%s", got, want)
 		}
-	}
-	if sepIdx == -1 {
-		t.Fatal("args should contain -- separator")
-	}
-	afterSep := args[sepIdx+1:]
-	if len(afterSep) < 3 || afterSep[0] != "sh" || afterSep[1] != "-c" {
-		t.Errorf("expected 'sh -c <script>' after --, got: %v", afterSep)
-	}
-	script := afterSep[2]
-	// Inner script: net-only setup (no slirp4netns — launched from host side).
-	if strings.Contains(script, "slirp4netns") {
-		t.Errorf("inner script should NOT contain slirp4netns (launched from Go), got:\n%s", script)
-	}
-	if !strings.Contains(script, "tap0") {
-		t.Errorf("inner script should wait for tap0, got:\n%s", script)
-	}
-	if !strings.Contains(script, "iptables") {
-		t.Errorf("inner script should contain iptables rules, got:\n%s", script)
-	}
+	})
+	t.Run("v6 uses the v6 forwarder and reject type", func(t *testing.T) {
+		got := firewallRules(true, firewallSpec{allowIPs: []string{"2001:db8::1"}, filter: true})
+		for _, want := range []string{"-A OUTPUT -d fd00::3 -p udp --dport 53 -j ACCEPT", "-A OUTPUT -d 2001:db8::1 -j ACCEPT", "--reject-with icmp6-adm-prohibited"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in:\n%s", want, got)
+			}
+		}
+	})
+	t.Run("ports add DNAT to localhost and allow replies", func(t *testing.T) {
+		got := firewallRules(false, firewallSpec{filter: true, ports: []int{3000}})
+		for _, want := range []string{
+			"-A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+			"*nat\n",
+			"-A PREROUTING -i tap0 -p tcp --dport 3000 -j DNAT --to-destination 127.0.0.1:3000",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in:\n%s", want, got)
+			}
+		}
+		// Replies only by connection state: no rule opening a port outbound.
+		if strings.Contains(got, "--sport") {
+			t.Errorf("source-port rules would let new connections out:\n%s", got)
+		}
+	})
+	t.Run("ports without allow_net: redirect only, no filter", func(t *testing.T) {
+		got := firewallRules(false, firewallSpec{ports: []int{8080}})
+		if strings.Contains(got, "*filter") || !strings.Contains(got, "--dport 8080 -j DNAT") {
+			t.Errorf("want only the nat table, got:\n%s", got)
+		}
+	})
+	t.Run("nothing to do", func(t *testing.T) {
+		if got := firewallRules(false, firewallSpec{}); got != "" {
+			t.Errorf("want no rules, got:\n%s", got)
+		}
+	})
+	t.Run("DNS port is never open beyond the forwarder", func(t *testing.T) {
+		for _, v6 := range []bool{false, true} {
+			got := firewallRules(v6, firewallSpec{allowIPs: []string{"9.9.9.9"}, filter: true, ports: []int{1}})
+			for _, line := range strings.Split(got, "\n") {
+				if strings.Contains(line, "--dport 53") && !strings.Contains(line, "-d 10.0.2.3 ") && !strings.Contains(line, "-d fd00::3 ") {
+					t.Errorf("v6=%v: DNS open beyond the forwarder: %s", v6, line)
+				}
+			}
+		}
+	})
 }
 
-func TestAppendBwrapNetArgs_IsolationFlagsFromBuildBwrapArgs(t *testing.T) {
-	p := &LinuxPlatform{exec: newMockExecutor()}
-	profile := domain.SandboxProfile{
-		Config:  domain.Config{AllowNet: []string{"example.com"}},
-		WorkDir: "/tmp",
-	}
-	var tmp []string
-	base, err := p.buildBwrapArgs(profile, &tmp)
-	if err != nil {
-		t.Fatalf("buildBwrapArgs error: %v", err)
-	}
-	args := appendBwrapNetArgs(base, profile.Config.AllowNet, nil, nil, false, "echo", nil)
-
-	for _, flag := range []string{"--unshare-user", "--unshare-pid", "--die-with-parent", "--unshare-net"} {
-		if !containsFlag(args, flag) {
-			t.Errorf("args should contain %q, got: %v", flag, args)
+func TestResolveAllowNet(t *testing.T) {
+	lookup := func(h string) ([]net.IP, error) {
+		switch h {
+		case "api.example":
+			return []net.IP{net.ParseIP("5.6.7.8"), net.ParseIP("1.2.3.4"), net.ParseIP("2001:db8::2")}, nil
+		case "dup.example":
+			return []net.IP{net.ParseIP("1.2.3.4")}, nil
 		}
+		return nil, fmt.Errorf("no such host")
 	}
-	if !containsTriple(args, "--ro-bind", "/", "/") {
-		t.Errorf("args should contain --ro-bind / /, got: %v", args)
+	v4, v6 := resolveAllowNet([]string{"api.example", "dup.example", "9.9.9.9", "2001:db8::1", "missing.example"}, lookup)
+	if want := []string{"1.2.3.4", "5.6.7.8", "9.9.9.9"}; !slices.Equal(v4, want) {
+		t.Errorf("v4 = %v, want %v (sorted, deduplicated, literal IPs kept)", v4, want)
 	}
-}
-
-func TestAppendBwrapNetArgs_NoAigateMarkersInInnerScript(t *testing.T) {
-	args := appendBwrapNetArgs(nil, nil, nil, nil, false, "echo", nil)
-	script := ""
-	for i, a := range args {
-		if a == "-c" && i+1 < len(args) {
-			script = args[i+1]
-		}
-	}
-	for _, forbidden := range []string{"aigate-denied", "aigate-deny-exec", "setfacl"} {
-		if strings.Contains(script, forbidden) {
-			t.Errorf("inner script should not contain %q (bwrap handles this)", forbidden)
-		}
+	if want := []string{"2001:db8::1", "2001:db8::2"}; !slices.Equal(v6, want) {
+		t.Errorf("v6 = %v, want %v", v6, want)
 	}
 }
 
 func TestSlirpArgs(t *testing.T) {
 	t.Run("v4-only does not pass --enable-ipv6", func(t *testing.T) {
 		args := slirpArgs(1234, false)
-		want := []string{"--configure", "1234", "tap0"}
+		want := []string{"--disable-host-loopback", "--configure", "1234", "tap0"}
 		if len(args) != len(want) {
 			t.Fatalf("len = %d, want %d (%v)", len(args), len(want), args)
 		}
 		for i := range want {
 			if args[i] != want[i] {
 				t.Errorf("args[%d] = %q, want %q", i, args[i], want[i])
+			}
+		}
+	})
+
+	t.Run("host loopback is always off", func(t *testing.T) {
+		for _, v6 := range []bool{false, true} {
+			if !slices.Contains(slirpArgs(1234, v6), "--disable-host-loopback") {
+				t.Errorf("ipv6=%v: 10.0.2.2 would reach the host's 127.0.0.1", v6)
 			}
 		}
 	})
@@ -961,5 +888,55 @@ func TestRunSandboxedDispatch_BwrapNetFilter(t *testing.T) {
 	}
 	if err := p.RunSandboxed(profile, "true", nil, os.Stdout, os.Stderr); err != nil {
 		t.Errorf("RunSandboxed with bwrap+slirp returned error: %v", err)
+	}
+}
+
+// skipIfBwrapBlockedOnPath: Ubuntu's AppArmor profile allows bwrap only at
+// its real path, so a PATH of symlinks can't be used to hide slirp4netns.
+func skipIfBwrapBlockedOnPath(t *testing.T) {
+	t.Helper()
+	if DetectUsernsProblem() != nil {
+		t.Skip("AppArmor allows bwrap only at its installed path; can't hide slirp4netns here")
+	}
+}
+
+// pathOnly sets PATH to a folder holding only the named programs.
+func pathOnly(t *testing.T, names ...string) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, n := range names {
+		if p, err := exec.LookPath(n); err == nil {
+			if err := os.Symlink(p, filepath.Join(dir, n)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Setenv("PATH", dir)
+}
+
+func TestRunSandboxed_AllowNetWithoutSlirpFailsClosed(t *testing.T) {
+	pathOnly(t, "bwrap")
+	skipIfBwrapBlockedOnPath(t)
+	mock := newMockExecutor()
+	p := &LinuxPlatform{exec: mock}
+	profile := domain.SandboxProfile{Config: domain.Config{AllowNet: []string{"example.com"}}, WorkDir: "/tmp"}
+
+	err := p.RunSandboxed(profile, "echo", nil, os.Stdout, os.Stderr)
+	if err == nil || !strings.Contains(err.Error(), "slirp4netns is missing") || !strings.Contains(err.Error(), "To allow:") {
+		t.Fatalf("want a block naming slirp4netns and the fix, got %v", err)
+	}
+	if mock.callCount() != 0 {
+		t.Error("nothing may run when allow_net can't be enforced")
+	}
+}
+
+func TestFirewallSetupBlock_NamesTheFix(t *testing.T) {
+	legacy := fmt.Errorf("iptables-restore v1.8.11 (legacy): unable to initialize table 'filter'")
+	if got := firewallSetupBlock(legacy).String(); !strings.Contains(got, "sudo dnf install iptables-nft") {
+		t.Errorf("legacy iptables should point at iptables-nft, got: %s", got)
+	}
+	other := fmt.Errorf("nsenter: failed")
+	if got := firewallSetupBlock(other).String(); !strings.Contains(got, "aigate doctor") || !strings.Contains(got, "allow_net firewall") {
+		t.Errorf("unknown cause should point at doctor, got: %s", got)
 	}
 }
