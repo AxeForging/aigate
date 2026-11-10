@@ -39,369 +39,110 @@ func TestNewMaskingWriter_InvalidCustomPattern(t *testing.T) {
 	}
 }
 
-func TestMaskingWriter_OpenAIPreset(t *testing.T) {
+// newMasker returns a masking writer over a buffer it also returns.
+func newMasker(t *testing.T, cfg domain.MaskStdout) (*MaskingWriter, *bytes.Buffer) {
+	t.Helper()
 	var buf bytes.Buffer
-	mw, err := NewMaskingWriter(&buf, domain.MaskStdout{Presets: []string{"openai"}})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	input := "Using key sk-abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKL\n"
-	if _, err := mw.Write([]byte(input)); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-
-	out := buf.String()
-	if strings.Contains(out, "sk-abcdefghijklmnopqrstuvwxyz") {
-		t.Errorf("output should not contain the raw key: %q", out)
-	}
-	if !strings.Contains(out, "sk-***") {
-		t.Errorf("output should contain masked key prefix, got: %q", out)
-	}
-}
-
-func TestMaskingWriter_AnthropicPreset(t *testing.T) {
-	var buf bytes.Buffer
-	mw, err := NewMaskingWriter(&buf, domain.MaskStdout{Presets: []string{"anthropic"}})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	input := "key=sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
-	if _, err := mw.Write([]byte(input)); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-
-	out := buf.String()
-	if strings.Contains(out, "api03") {
-		t.Errorf("output should not contain raw anthropic key: %q", out)
-	}
-	if !strings.Contains(out, "sk-ant-***") {
-		t.Errorf("output should contain 'sk-ant-***', got: %q", out)
-	}
-}
-
-func TestMaskingWriter_AWSKeyPreset(t *testing.T) {
-	var buf bytes.Buffer
-	mw, err := NewMaskingWriter(&buf, domain.MaskStdout{Presets: []string{"aws_key"}})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	input := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"
-	if _, err := mw.Write([]byte(input)); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-
-	out := buf.String()
-	if strings.Contains(out, "AKIAIOSFODNN7EXAMPLE") {
-		t.Errorf("output should not contain raw AWS key: %q", out)
-	}
-	if !strings.Contains(out, "AKIA***") {
-		t.Errorf("output should contain masked AWS key prefix, got: %q", out)
-	}
-}
-
-func TestMaskingWriter_GitHubPreset(t *testing.T) {
-	var buf bytes.Buffer
-	mw, err := NewMaskingWriter(&buf, domain.MaskStdout{Presets: []string{"github"}})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	input := "token: ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
-	if _, err := mw.Write([]byte(input)); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-
-	out := buf.String()
-	if strings.Contains(out, "ghp_AAAA") {
-		t.Errorf("output should not contain raw GitHub token: %q", out)
-	}
-	if !strings.Contains(out, "ghp_***") {
-		t.Errorf("output should contain masked GitHub prefix, got: %q", out)
-	}
-}
-
-func TestMaskingWriter_BearerPreset(t *testing.T) {
-	var buf bytes.Buffer
-	mw, err := NewMaskingWriter(&buf, domain.MaskStdout{Presets: []string{"bearer"}})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	input := "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload\n"
-	if _, err := mw.Write([]byte(input)); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-
-	out := buf.String()
-	if strings.Contains(out, "eyJhbGci") {
-		t.Errorf("output should not contain raw bearer token: %q", out)
-	}
-	if !strings.Contains(out, "Bearer ***") {
-		t.Errorf("output should contain 'Bearer ***', got: %q", out)
-	}
-}
-
-func TestMaskingWriter_CustomPattern_FullMask(t *testing.T) {
-	var buf bytes.Buffer
-	cfg := domain.MaskStdout{
-		Patterns: []domain.MaskPattern{
-			{Regex: `mysecret-[a-z0-9]+`, ShowPrefix: 0},
-		},
-	}
 	mw, err := NewMaskingWriter(&buf, cfg)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("NewMaskingWriter: %v", err)
 	}
+	return mw, &buf
+}
 
-	input := "value=mysecret-abc123xyz\n"
+// maskOnce writes input through a fresh masker and returns what came out.
+func maskOnce(t *testing.T, cfg domain.MaskStdout, input string) string {
+	t.Helper()
+	mw, buf := newMasker(t, cfg)
 	if _, err := mw.Write([]byte(input)); err != nil {
-		t.Fatalf("Write error: %v", err)
+		t.Fatalf("Write: %v", err)
 	}
+	return buf.String()
+}
 
-	out := buf.String()
-	if strings.Contains(out, "mysecret-abc123xyz") {
-		t.Errorf("output should not contain raw secret: %q", out)
+func presets(names ...string) domain.MaskStdout { return domain.MaskStdout{Presets: names} }
+
+func pattern(p domain.MaskPattern) domain.MaskStdout {
+	return domain.MaskStdout{Patterns: []domain.MaskPattern{p}}
+}
+
+// TestMaskingWriter_Masks: each secret format is hidden (gone) and leaves the
+// documented prefix (want); lines without a secret pass through unchanged.
+func TestMaskingWriter_Masks(t *testing.T) {
+	cases := []struct {
+		name  string
+		cfg   domain.MaskStdout
+		input string
+		gone  []string // must not appear in the output
+		want  string   // must appear; "" = output equals input
+	}{
+		{"openai", presets("openai"), "Using key sk-abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKL\n", []string{"sk-abcdefghijklmnopqrstuvwxyz"}, "sk-***"},
+		{"anthropic", presets("anthropic"), "key=sk-ant-api03-" + strings.Repeat("A", 72) + "\n", []string{"api03"}, "sk-ant-***"},
+		{"aws_key", presets("aws_key"), "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n", []string{"AKIAIOSFODNN7EXAMPLE"}, "AKIA***"},
+		{"github", presets("github"), "token: ghp_" + strings.Repeat("A", 36) + "\n", []string{"ghp_AAAA"}, "ghp_***"},
+		{"bearer", presets("bearer"), "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload\n", []string{"eyJhbGci"}, "Bearer ***"},
+		{"aws_secret, = form", presets("aws_secret"), "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n", []string{"wJalrXUtnFEMI"}, "AWS_SECRET_ACCESS_KEY=***"},
+		{"aws_secret, YAML form", presets("aws_secret"), "AWS_SECRET_ACCESS_KEY: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n", []string{"wJalrXUtnFEMI"}, "***"},
+		{"aws_secret leaves the key ID to aws_key", presets("aws_secret"), "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n", nil, ""},
+		{"two secrets on one line", presets("openai", "github"), "openai=sk-abcdefghijklmnopqrstuvwxyz123456789012 github=ghp_" + strings.Repeat("A", 36) + "\n", []string{"abcdefghijk", "ghp_AAAA"}, "***"},
+		{"clean line untouched", presets("openai", "github", "aws_key"), "hello world, no secrets here\n", nil, ""},
+		{"custom pattern, fully masked", pattern(domain.MaskPattern{Regex: `mysecret-[a-z0-9]+`}), "value=mysecret-abc123xyz\n", []string{"mysecret-abc123xyz"}, "***"},
+		{"custom pattern, prefix kept", pattern(domain.MaskPattern{Regex: `token-[a-zA-Z0-9]{16}`, ShowPrefix: 6}), "token-ABCDEFGHIJKLMNOP logged\n", []string{"ABCDEF"}, "token-***"},
+		{"case-sensitive by default", pattern(domain.MaskPattern{Regex: `mysecret-[a-z0-9]+`}), "value=MYSECRET-abc123\n", nil, ""},
 	}
-	if !strings.Contains(out, "***") {
-		t.Errorf("output should contain ***, got: %q", out)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out := maskOnce(t, c.cfg, c.input)
+			for _, g := range c.gone {
+				if strings.Contains(out, g) {
+					t.Errorf("output still contains %q: %q", g, out)
+				}
+			}
+			if c.want == "" && out != c.input {
+				t.Errorf("want the line unchanged, got %q", out)
+			}
+			if c.want != "" && !strings.Contains(out, c.want) {
+				t.Errorf("want %q in %q", c.want, out)
+			}
+		})
 	}
 }
 
-func TestMaskingWriter_CustomPattern_ShowPrefix(t *testing.T) {
-	var buf bytes.Buffer
-	cfg := domain.MaskStdout{
-		Patterns: []domain.MaskPattern{
-			{Regex: `token-[a-zA-Z0-9]{16}`, ShowPrefix: 6},
-		},
-	}
-	mw, err := NewMaskingWriter(&buf, cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	input := "token-ABCDEFGHIJKLMNOP logged\n"
-	if _, err := mw.Write([]byte(input)); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-
-	out := buf.String()
-	if !strings.Contains(out, "token-***") {
-		t.Errorf("expected 'token-***', got: %q", out)
-	}
-	if strings.Contains(out, "ABCDEF") {
-		t.Errorf("should not contain characters after prefix, got: %q", out)
-	}
-}
-
-func TestMaskingWriter_NoFalsePositives(t *testing.T) {
-	var buf bytes.Buffer
-	mw, err := NewMaskingWriter(&buf, domain.MaskStdout{Presets: []string{"openai", "github", "aws_key"}})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	input := "hello world, no secrets here\n"
-	if _, err := mw.Write([]byte(input)); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-
-	out := buf.String()
-	if out != input {
-		t.Errorf("clean line should pass through unchanged, got: %q", out)
+func TestMaskingWriter_CaseInsensitive(t *testing.T) {
+	cfg := pattern(domain.MaskPattern{Regex: `mysecret-[a-z0-9]+`, CaseInsensitive: true})
+	for _, input := range []string{"value=MYSECRET-abc123\n", "value=mysecret-abc123\n", "value=MySecret-ABC123\n"} {
+		if out := maskOnce(t, cfg, input); !strings.Contains(out, "***") {
+			t.Errorf("case-insensitive match failed for %q, got %q", input, out)
+		}
 	}
 }
 
 func TestMaskingWriter_MultipleWritesAcrossChunks(t *testing.T) {
-	var buf bytes.Buffer
-	mw, err := NewMaskingWriter(&buf, domain.MaskStdout{Presets: []string{"openai"}})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	mw, buf := newMasker(t, presets("openai"))
+	// Split mid-key across two writes.
+	for _, chunk := range []string{"key=sk-abcdefghijklmnopqrst", "uvwxyz1234567890ABCDEFGHIJKL\n"} {
+		if _, err := mw.Write([]byte(chunk)); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
 	}
-
-	// Write in two chunks, split mid-key
-	chunk1 := "key=sk-abcdefghijklmnopqrst"
-	chunk2 := "uvwxyz1234567890ABCDEFGHIJKL\n"
-	if _, err := mw.Write([]byte(chunk1)); err != nil {
-		t.Fatalf("Write chunk1 error: %v", err)
-	}
-	if _, err := mw.Write([]byte(chunk2)); err != nil {
-		t.Fatalf("Write chunk2 error: %v", err)
-	}
-
-	out := buf.String()
-	if strings.Contains(out, "sk-abcdefghijklmnopqrstuv") {
+	if out := buf.String(); strings.Contains(out, "sk-abcdefghijklmnopqrstuv") {
 		t.Errorf("key split across chunks should still be masked: %q", out)
 	}
 }
 
 func TestMaskingWriter_FlushIncompleteLastLine(t *testing.T) {
-	var buf bytes.Buffer
-	cfg := domain.MaskStdout{
-		Patterns: []domain.MaskPattern{{Regex: `secret`, ShowPrefix: 0}},
+	mw, buf := newMasker(t, pattern(domain.MaskPattern{Regex: `secret`}))
+	if _, err := mw.Write([]byte("contains secret")); err != nil { // no trailing newline
+		t.Fatalf("Write: %v", err)
 	}
-	mw, err := NewMaskingWriter(&buf, cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// No trailing newline
-	if _, err := mw.Write([]byte("contains secret")); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-
-	// Nothing flushed yet
 	if buf.Len() != 0 {
 		t.Errorf("incomplete line should be buffered, got: %q", buf.String())
 	}
-
 	if err := mw.Flush(); err != nil {
-		t.Fatalf("Flush error: %v", err)
+		t.Fatalf("Flush: %v", err)
 	}
-
-	out := buf.String()
-	if strings.Contains(out, "secret") {
-		t.Errorf("flushed content should be masked: %q", out)
-	}
-	if !strings.Contains(out, "***") {
-		t.Errorf("flushed content should contain ***, got: %q", out)
-	}
-}
-
-func TestMaskingWriter_MultipleSecretsOnOneLine(t *testing.T) {
-	var buf bytes.Buffer
-	mw, err := NewMaskingWriter(&buf, domain.MaskStdout{Presets: []string{"openai", "github"}})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	input := "openai=sk-abcdefghijklmnopqrstuvwxyz123456789012 github=ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
-	if _, err := mw.Write([]byte(input)); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-
-	out := buf.String()
-	if strings.Contains(out, "abcdefghijk") {
-		t.Errorf("openai key should be masked: %q", out)
-	}
-	if strings.Contains(out, "ghp_AAAA") {
-		t.Errorf("github token should be masked: %q", out)
-	}
-}
-
-func TestMaskingWriter_CaseInsensitive(t *testing.T) {
-	var buf bytes.Buffer
-	cfg := domain.MaskStdout{
-		Patterns: []domain.MaskPattern{
-			{Regex: `mysecret-[a-z0-9]+`, ShowPrefix: 0, CaseInsensitive: true},
-		},
-	}
-	mw, err := NewMaskingWriter(&buf, cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	for _, input := range []string{
-		"value=MYSECRET-abc123\n",
-		"value=mysecret-abc123\n",
-		"value=MySecret-ABC123\n",
-	} {
-		buf.Reset()
-		if _, err := mw.Write([]byte(input)); err != nil {
-			t.Fatalf("Write error: %v", err)
-		}
-		out := buf.String()
-		if !strings.Contains(out, "***") {
-			t.Errorf("case-insensitive match failed for input %q, got: %q", input, out)
-		}
-	}
-}
-
-func TestMaskingWriter_CaseSensitiveByDefault(t *testing.T) {
-	var buf bytes.Buffer
-	cfg := domain.MaskStdout{
-		Patterns: []domain.MaskPattern{
-			{Regex: `mysecret-[a-z0-9]+`, ShowPrefix: 0},
-		},
-	}
-	mw, err := NewMaskingWriter(&buf, cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// uppercase should NOT match when case_insensitive is false
-	input := "value=MYSECRET-abc123\n"
-	if _, err := mw.Write([]byte(input)); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-	out := buf.String()
-	if out != input {
-		t.Errorf("case-sensitive pattern should not match uppercase, got: %q", out)
-	}
-}
-
-func TestMaskingWriter_AWSSecretPreset(t *testing.T) {
-	var buf bytes.Buffer
-	mw, err := NewMaskingWriter(&buf, domain.MaskStdout{Presets: []string{"aws_secret"}})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Standard .env assignment format
-	input := "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
-	if _, err := mw.Write([]byte(input)); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-
-	out := buf.String()
-	if strings.Contains(out, "wJalrXUtnFEMI") {
-		t.Errorf("output should not contain raw AWS secret value: %q", out)
-	}
-	if !strings.Contains(out, "AWS_SECRET_ACCESS_KEY=***") {
-		t.Errorf("output should show key name and mask value, got: %q", out)
-	}
-}
-
-func TestMaskingWriter_AWSSecretPreset_ColonFormat(t *testing.T) {
-	var buf bytes.Buffer
-	mw, err := NewMaskingWriter(&buf, domain.MaskStdout{Presets: []string{"aws_secret"}})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// YAML/config colon format
-	input := "AWS_SECRET_ACCESS_KEY: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
-	if _, err := mw.Write([]byte(input)); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-
-	out := buf.String()
-	if strings.Contains(out, "wJalrXUtnFEMI") {
-		t.Errorf("output should not contain raw AWS secret value: %q", out)
-	}
-	if !strings.Contains(out, "***") {
-		t.Errorf("output should mask the value, got: %q", out)
-	}
-}
-
-func TestMaskingWriter_AWSSecretPreset_NoFalsePositiveOnKeyID(t *testing.T) {
-	var buf bytes.Buffer
-	// aws_secret preset should NOT mask AWS_ACCESS_KEY_ID (that's aws_key's job)
-	mw, err := NewMaskingWriter(&buf, domain.MaskStdout{Presets: []string{"aws_secret"}})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	input := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"
-	if _, err := mw.Write([]byte(input)); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-
-	out := buf.String()
-	if out != input {
-		t.Errorf("aws_secret preset should not mask AWS_ACCESS_KEY_ID line, got: %q", out)
+	if out := buf.String(); strings.Contains(out, "secret") || !strings.Contains(out, "***") {
+		t.Errorf("flushed content should be masked, got: %q", out)
 	}
 }
 
