@@ -23,7 +23,7 @@ func serveTestBroker(t *testing.T, chain *Chain) (sock, home string) {
 	t.Helper()
 	home = t.TempDir()
 	t.Setenv("HOME", home)
-	sock = filepath.Join(t.TempDir(), "j.sock")
+	sock = shortSockPath(t)
 	b := &JudgeBroker{Chain: chain, Audit: NewAuditService(nil),
 		Profile: domain.SandboxProfile{WorkDir: "/work", Identity: &domain.ResolvedIdentity{Name: "work"}}}
 	stop, err := ServeJudgeBroker(sock, b)
@@ -75,7 +75,7 @@ func TestJudgeBroker_AuditsFallbackAndMasksCommand(t *testing.T) {
 func TestJudgeBroker_ConcurrentAndStop(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	sock := filepath.Join(t.TempDir(), "j.sock")
+	sock := shortSockPath(t)
 	stop, err := ServeJudgeBroker(sock, &JudgeBroker{Chain: &Chain{Rules: RulesJudge{}}})
 	if err != nil {
 		t.Fatal(err)
@@ -145,4 +145,16 @@ func TestJudgeBroker_DecisionCarriesCallID(t *testing.T) {
 	if !strings.Contains(string(data), `"call_id":"`+want+`"`) {
 		t.Errorf("judge_decision should carry call_id %s so the dashboard can link its override:\n%s", want, data)
 	}
+}
+
+// shortSockPath: macOS caps unix socket paths at 104 bytes and t.TempDir()
+// (named after the test, under /var/folders/…) goes past it.
+func shortSockPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "aj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "j.sock")
 }

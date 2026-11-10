@@ -1,9 +1,16 @@
 name: macOS
 
-# Manual only: run it against a branch with
+# Every PR and push to main (free on public repos), or by hand:
 #   gh workflow run macos.yml --ref <branch>
 on:
+  pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

@@ -65,8 +65,9 @@ func TestGenerateSeatbeltProfile_IdentityRuleOrder(t *testing.T) {
 }
 
 func TestIdentityEnvCommand(t *testing.T) {
-	if got := identityEnvCommand(domain.SandboxProfile{}); got != nil {
-		t.Errorf("no identity → no env wrapper, got %v", got)
+	// Every session drops the agent sockets' env vars, identity or not.
+	if got := strings.Join(identityEnvCommand(domain.SandboxProfile{}), " "); got != "/usr/bin/env -u SSH_AUTH_SOCK -u SSH_AGENT_PID -u GPG_AGENT_INFO" {
+		t.Errorf("no identity → only the agent vars removed, got %q", got)
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -120,5 +121,30 @@ func TestGenerateSeatbeltProfile_ParentMetadataOnly(t *testing.T) {
 	}
 	if strings.Contains(sb, `(allow file-read* (subpath "`+rh+`"))`) || strings.Contains(sb, `file-read-data (literal "`+rh+`")`) {
 		t.Errorf("$HOME itself must not become listable/readable:\n%s", sb)
+	}
+}
+
+// TestSeatbeltProfile_BlocksAgentSocketAndRealExecPath: the ssh-agent socket
+// is denied, and deny_exec names the resolved path (Seatbelt matches those;
+// /var → /private/var made blocked tools under /var/folders still run).
+func TestSeatbeltProfile_BlocksAgentSocketAndRealExecPath(t *testing.T) {
+	dir := t.TempDir() // under /var/folders: a symlinked path
+	tool := filepath.Join(dir, "blocked-tool")
+	if err := os.WriteFile(tool, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	sock := filepath.Join(dir, "agent.sock")
+	t.Setenv("SSH_AUTH_SOCK", sock)
+	real, _ := filepath.EvalSymlinks(dir)
+
+	sb := generateSeatbeltProfile(domain.SandboxProfile{WorkDir: dir, Config: domain.Config{DenyExec: []string{"blocked-tool"}}})
+	for _, want := range []string{
+		`(deny process-exec (literal "` + filepath.Join(real, "blocked-tool") + `"))`,
+		`(deny network-outbound (remote unix-socket (path-literal "`,
+	} {
+		if !strings.Contains(sb, want) {
+			t.Errorf("missing %s in:\n%s", want, sb)
+		}
 	}
 }
