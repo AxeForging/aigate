@@ -14,6 +14,32 @@ import (
 
 const escapeTestTimeout = 15 * time.Second
 
+// escapeEnv builds aigate and a minimal throwaway HOME for an escape test
+// (skipped with -short).
+func escapeEnv(t *testing.T) (bin string, env []string) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping sandbox escape test in short mode")
+	}
+	_, env = sandboxEnv(t)
+	return buildBinary(t), env
+}
+
+// escapeEnvWith is escapeEnv with the given deny rules (YAML lines) in the
+// config, plus a fresh working directory.
+func escapeEnvWith(t *testing.T, rules string) (bin string, env []string, work string) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping sandbox escape test in short mode")
+	}
+	home, env := sandboxEnv(t)
+	cfg := "group: ai-agents\nuser: ai-runner\n" + rules + "\nallow_net: []\n"
+	if err := os.WriteFile(filepath.Join(home, ".aigate", "config.yaml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return buildBinary(t), env, t.TempDir()
+}
+
 // runSandboxedCmd runs a command inside the bwrap sandbox and returns
 // combined stdout+stderr. Skips if bwrap is not installed. Each invocation
 // is capped at escapeTestTimeout to prevent hangs.
@@ -44,11 +70,7 @@ func runSandboxedCmd(t *testing.T, bin string, env []string, workDir string, cmd
 // TestEscape_ProcHostPIDs verifies host PIDs are invisible.
 // We get the host test PID, then check it's not in /proc inside the sandbox.
 func TestEscape_ProcHostPIDs(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	_, env := sandboxEnv(t)
+	bin, env := escapeEnv(t)
 
 	hostPID := strconv.Itoa(os.Getpid())
 
@@ -73,11 +95,7 @@ func TestEscape_ProcHostPIDs(t *testing.T) {
 // TestEscape_KillHostProcess starts a real process on the host, tries to
 // kill it from inside the sandbox, then verifies it survived.
 func TestEscape_KillHostProcess(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	_, env := sandboxEnv(t)
+	bin, env := escapeEnv(t)
 
 	// Sacrificial host process
 	victim := exec.Command("sleep", "60")
@@ -105,11 +123,7 @@ func TestEscape_KillHostProcess(t *testing.T) {
 
 // TestEscape_ProcCmdlinePID1 verifies PID 1 inside sandbox is NOT host init.
 func TestEscape_ProcCmdlinePID1(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	_, env := sandboxEnv(t)
+	bin, env := escapeEnv(t)
 
 	out, err := runSandboxedCmd(t, bin, env, "", "sh", "-c",
 		"cat /proc/1/cmdline 2>&1 | tr '\\0' ' '")
@@ -133,11 +147,7 @@ func TestEscape_ProcCmdlinePID1(t *testing.T) {
 // This test creates a user-owned file outside the workdir and checks if the
 // sandbox can tamper with it. If it can, that's a real finding.
 func TestEscape_WriteToUserOwnedPath(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	_, env := sandboxEnv(t)
+	bin, env := escapeEnv(t)
 
 	canaryDir := t.TempDir()
 	canaryFile := filepath.Join(canaryDir, "canary.txt")
@@ -159,11 +169,7 @@ func TestEscape_WriteToUserOwnedPath(t *testing.T) {
 
 // TestEscape_WriteToEtc verifies root-owned paths are not writable.
 func TestEscape_WriteToEtc(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	_, env := sandboxEnv(t)
+	bin, env := escapeEnv(t)
 
 	runSandboxedCmd(t, bin, env, "", "sh", "-c", //nolint:errcheck
 		"echo ESCAPED > /etc/aigate-escape-test 2>/dev/null; true")
@@ -178,150 +184,67 @@ func TestEscape_WriteToEtc(t *testing.T) {
 // DENY_READ: Can we read denied files through alternative paths?
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestEscape_HardlinkBypassDenyRead is the most likely real bypass.
-// bwrap --bind overlays a deny marker at the exact path, but a hardlink
-// to the same inode has a different path — the overlay doesn't cover it.
-func TestEscape_HardlinkBypassDenyRead(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	tmpHome, env := sandboxEnv(t)
-
-	workDir := t.TempDir()
-	secretFile := filepath.Join(workDir, ".env")
-	if err := os.WriteFile(secretFile, []byte("API_KEY=sk-hardlink-secret\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create hardlink BEFORE sandbox starts
-	hardlink := filepath.Join(workDir, ".env-hardlink")
-	if err := os.Link(secretFile, hardlink); err != nil {
-		t.Skip("hardlinks not supported")
-	}
-
-	cfgPath := filepath.Join(tmpHome, ".aigate", "config.yaml")
-	cfg := "group: ai-agents\nuser: ai-runner\ndeny_read: [.env]\ndeny_exec: []\nallow_net: []\n"
-	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	out, _ := runSandboxedCmd(t, bin, env, workDir, "cat", hardlink)
-	if strings.Contains(out, "sk-hardlink-secret") {
-		t.Error("HARDLINK BYPASSED deny_read — bind mount only covers exact path, not inode")
-	}
-}
-
-// TestEscape_SymlinkBypassDenyRead tests the symlink path to a denied file.
-func TestEscape_SymlinkBypassDenyRead(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	tmpHome, env := sandboxEnv(t)
-
-	workDir := t.TempDir()
-	secretFile := filepath.Join(workDir, "secret.txt")
-	if err := os.WriteFile(secretFile, []byte("TOP_SECRET\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	symlink := filepath.Join(workDir, "link")
-	if err := os.Symlink(secretFile, symlink); err != nil {
-		t.Fatal(err)
-	}
-
-	cfgPath := filepath.Join(tmpHome, ".aigate", "config.yaml")
-	cfg := "group: ai-agents\nuser: ai-runner\ndeny_read: [secret.txt]\ndeny_exec: []\nallow_net: []\n"
-	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	out, _ := runSandboxedCmd(t, bin, env, workDir, "cat", symlink)
-	if strings.Contains(out, "TOP_SECRET") {
-		t.Error("symlink bypassed deny_read")
-	}
-}
-
-// TestEscape_ProcSelfRootBypassDenyRead tests reading denied file via /proc/self/root.
-func TestEscape_ProcSelfRootBypassDenyRead(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	tmpHome, env := sandboxEnv(t)
-
-	workDir := t.TempDir()
-	secretFile := filepath.Join(workDir, ".env")
-	if err := os.WriteFile(secretFile, []byte("API_KEY=sk-proc-root-leak\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfgPath := filepath.Join(tmpHome, ".aigate", "config.yaml")
-	cfg := "group: ai-agents\nuser: ai-runner\ndeny_read: [.env]\ndeny_exec: []\nallow_net: []\n"
-	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	out, _ := runSandboxedCmd(t, bin, env, workDir, "sh", "-c",
-		"cat /proc/self/root"+secretFile+" 2>&1")
-	if strings.Contains(out, "sk-proc-root-leak") {
-		t.Error("/proc/self/root bypassed deny_read")
-	}
-}
-
-// TestEscape_PythonBypassDenyRead uses python to try open() on a denied file.
-// This tests that the deny is at the kernel/VFS level, not just shell-level.
-func TestEscape_PythonBypassDenyRead(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	tmpHome, env := sandboxEnv(t)
-
-	workDir := t.TempDir()
-	secretFile := filepath.Join(workDir, ".env")
-	if err := os.WriteFile(secretFile, []byte("API_KEY=sk-python-leak\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfgPath := filepath.Join(tmpHome, ".aigate", "config.yaml")
-	cfg := "group: ai-agents\nuser: ai-runner\ndeny_read: [.env]\ndeny_exec: []\nallow_net: []\n"
-	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Try multiple python bypass methods
-	pyScript := `
-import os, sys
+// TestEscape_DenyReadBypasses: a deny_read file stays unreadable through
+// every alternative path to its data — not just the shell's `cat` on its
+// own name.
+func TestEscape_DenyReadBypasses(t *testing.T) {
+	const canary = "API_KEY=sk-deny-read-canary"
+	pyReads := `
+import os, sys, mmap
 target = sys.argv[1]
-# Method 1: direct open
-try:
-    print("DIRECT:" + open(target).read().strip())
-except Exception as e:
-    print(f"DIRECT:BLOCKED:{e}")
-# Method 2: os.open with O_RDONLY
-try:
-    fd = os.open(target, os.O_RDONLY)
-    data = os.read(fd, 4096)
-    os.close(fd)
-    print("OSOPEN:" + data.decode().strip())
-except Exception as e:
-    print(f"OSOPEN:BLOCKED:{e}")
-# Method 3: mmap
-try:
-    import mmap
-    fd = os.open(target, os.O_RDONLY)
-    m = mmap.mmap(fd, 0, access=mmap.ACCESS_READ)
-    print("MMAP:" + m[:].decode().strip())
-    m.close()
-    os.close(fd)
-except Exception as e:
-    print(f"MMAP:BLOCKED:{e}")
+for name, read in [
+    ("open", lambda: open(target).read()),
+    ("os.open", lambda: os.read(os.open(target, os.O_RDONLY), 4096).decode()),
+    ("mmap", lambda: mmap.mmap(os.open(target, os.O_RDONLY), 0, access=mmap.ACCESS_READ)[:].decode()),
+]:
+    try:
+        print(name + ":" + read().strip())
+    except Exception as e:
+        print(name + ":BLOCKED:" + str(e))
 `
-	out, _ := runSandboxedCmd(t, bin, env, workDir, "python3", "-c", pyScript, secretFile)
-	if strings.Contains(out, "sk-python-leak") {
-		t.Errorf("python bypassed deny_read:\n%s", out)
+	cases := []struct {
+		name string
+		// cmd prepares the alternative path (in work) and returns the
+		// command that reads through it.
+		cmd func(t *testing.T, work, secret string) []string
+	}{
+		// bwrap binds a marker over the exact path; a hardlink is another
+		// path to the same inode.
+		{"hardlink", func(t *testing.T, work, secret string) []string {
+			link := filepath.Join(work, ".env-hardlink")
+			if err := os.Link(secret, link); err != nil {
+				t.Skip("hardlinks not supported")
+			}
+			return []string{"cat", link}
+		}},
+		{"symlink", func(t *testing.T, work, secret string) []string {
+			link := filepath.Join(work, "link")
+			if err := os.Symlink(secret, link); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"cat", link}
+		}},
+		{"/proc/self/root", func(t *testing.T, work, secret string) []string {
+			return []string{"sh", "-c", "cat /proc/self/root" + secret + " 2>&1"}
+		}},
+		// The deny must hold at the VFS level, not only for shell tools.
+		{"python open/os.open/mmap", func(t *testing.T, work, secret string) []string {
+			return []string{"python3", "-c", pyReads, secret}
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			bin, env, work := escapeEnvWith(t, "deny_read: [.env]\ndeny_exec: []")
+			secret := filepath.Join(work, ".env")
+			if err := os.WriteFile(secret, []byte(canary+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cmd := c.cmd(t, work, secret)
+			out, _ := runSandboxedCmd(t, bin, env, work, cmd...)
+			if strings.Contains(out, canary) {
+				t.Errorf("%s bypassed deny_read:\n%s", c.name, out)
+			}
+		})
 	}
 }
 
@@ -361,23 +284,9 @@ func TestEscape_ConfigDirHiddenAllMethods(t *testing.T) {
 // TestEscape_DenyExecViaPython verifies that deny_exec cannot be bypassed by
 // using python's subprocess to invoke the denied command.
 func TestEscape_DenyExecViaPython(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	tmpHome, env := sandboxEnv(t)
-
-	// Build a blocked binary
-	workDir := t.TempDir()
+	bin, env, workDir := escapeEnvWith(t, "deny_read: []\ndeny_exec: [blocked-tool]")
 	blockedBin := filepath.Join(workDir, "blocked-tool")
-	script := "#!/bin/sh\necho BLOCKED_TOOL_EXECUTED\n"
-	if err := os.WriteFile(blockedBin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	cfgPath := filepath.Join(tmpHome, ".aigate", "config.yaml")
-	cfg := "group: ai-agents\nuser: ai-runner\ndeny_read: []\ndeny_exec: [blocked-tool]\nallow_net: []\n"
-	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
+	if err := os.WriteFile(blockedBin, []byte("#!/bin/sh\necho BLOCKED_TOOL_EXECUTED\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -420,11 +329,7 @@ func TestKnownLimitation_DenyExecViaInterpreter(t *testing.T) {
 // TestEscape_DevMemBlocked verifies /dev/mem, /dev/kmem, /dev/port don't exist.
 // bwrap --dev creates a minimal /dev without these dangerous devices.
 func TestEscape_DevMemBlocked(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	_, env := sandboxEnv(t)
+	bin, env := escapeEnv(t)
 
 	for _, dev := range []string{"/dev/mem", "/dev/kmem", "/dev/port"} {
 		out, _ := runSandboxedCmd(t, bin, env, "", "sh", "-c",
@@ -435,82 +340,30 @@ func TestEscape_DevMemBlocked(t *testing.T) {
 	}
 }
 
-// TestEscape_MknodBlocked verifies mknod for creating device nodes fails.
-func TestEscape_MknodBlocked(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	_, env := sandboxEnv(t)
-
-	out, _ := runSandboxedCmd(t, bin, env, "", "sh", "-c",
-		"mknod /tmp/test-escape-dev b 8 0 2>&1; echo MKNOD_EXIT:$?")
-	if strings.Contains(out, "MKNOD_EXIT:0") {
-		t.Error("mknod succeeded — device creation should be blocked")
-	}
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // PRIVILEGE ESCALATION: Can we gain capabilities or modify kernel state?
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestEscape_MountBlocked verifies mounting is denied.
-func TestEscape_MountBlocked(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	_, env := sandboxEnv(t)
-
-	out, _ := runSandboxedCmd(t, bin, env, "", "sh", "-c",
-		"mount -t tmpfs tmpfs /mnt 2>&1; echo MOUNT_EXIT:$?")
-	if strings.Contains(out, "MOUNT_EXIT:0") {
-		t.Error("mount succeeded inside sandbox")
-	}
-}
-
-// TestEscape_ChrootBlocked verifies chroot is denied.
-func TestEscape_ChrootBlocked(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	_, env := sandboxEnv(t)
-
-	out, _ := runSandboxedCmd(t, bin, env, "", "sh", "-c",
-		"chroot / /bin/true 2>&1; echo CHROOT_EXIT:$?")
-	if strings.Contains(out, "CHROOT_EXIT:0") {
-		t.Error("chroot succeeded inside sandbox")
-	}
-}
-
-// TestEscape_SysrqBlocked verifies /proc/sysrq-trigger is not writable.
-func TestEscape_SysrqBlocked(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	_, env := sandboxEnv(t)
-
-	out, _ := runSandboxedCmd(t, bin, env, "", "sh", "-c",
-		"echo h > /proc/sysrq-trigger 2>&1; echo SYSRQ_EXIT:$?")
-	if strings.Contains(out, "SYSRQ_EXIT:0") {
-		t.Error("/proc/sysrq-trigger writable — dangerous")
-	}
-}
-
-// TestEscape_NsenterBlocked verifies nsenter into PID 1 namespaces fails.
-func TestEscape_NsenterBlocked(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	_, env := sandboxEnv(t)
-
-	out, _ := runSandboxedCmd(t, bin, env, "", "sh", "-c",
-		"nsenter -t 1 -n ip addr 2>&1; echo NSENTER_EXIT:$?")
-	if strings.Contains(out, "NSENTER_EXIT:0") {
-		t.Error("nsenter succeeded — namespace escape possible")
+// TestEscape_PrivilegedOpsFail: kernel-level operations an escape would
+// need all fail inside the sandbox.
+func TestEscape_PrivilegedOpsFail(t *testing.T) {
+	bin, env := escapeEnv(t)
+	for _, c := range []struct{ name, script string }{
+		{"mknod a block device", "mknod /tmp/test-escape-dev b 8 0"},
+		{"mount a filesystem", "mount -t tmpfs tmpfs /mnt"},
+		{"chroot", "chroot / /bin/true"},
+		{"write /proc/sysrq-trigger", "echo h > /proc/sysrq-trigger"},
+		{"nsenter PID 1's network", "nsenter -t 1 -n ip addr"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			out, _ := runSandboxedCmd(t, bin, env, "", "sh", "-c", c.script+" 2>&1; echo OP_EXIT:$?")
+			if !strings.Contains(out, "OP_EXIT:") {
+				t.Fatalf("sandbox did not run: %s", out)
+			}
+			if strings.Contains(out, "OP_EXIT:0") {
+				t.Errorf("succeeded inside the sandbox: %s\n%s", c.script, out)
+			}
+		})
 	}
 }
 
@@ -648,11 +501,7 @@ func TestEscape_WriteToGitconfig(t *testing.T) {
 // TestEscape_WorkdirWriteAllowed verifies the workdir IS writable (sanity check).
 // Without this, the sandbox would be useless — AI agents need to write code.
 func TestEscape_WorkdirWriteAllowed(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	_, env := sandboxEnv(t)
+	bin, env := escapeEnv(t)
 
 	workDir := t.TempDir()
 
@@ -675,11 +524,7 @@ func TestEscape_WorkdirWriteAllowed(t *testing.T) {
 // TestEscape_TmpIsolated verifies that /tmp inside the sandbox is isolated
 // from the host's /tmp (prevents reading host temp files with secrets).
 func TestEscape_TmpIsolated(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping sandbox escape test in short mode")
-	}
-	bin := buildBinary(t)
-	_, env := sandboxEnv(t)
+	bin, env := escapeEnv(t)
 
 	// Write a secret to host's /tmp
 	hostTmpFile := filepath.Join(os.TempDir(), "aigate-test-host-secret")

@@ -133,49 +133,27 @@ func TestEscape_NoCapabilitiesInside(t *testing.T) {
 	})
 }
 
-// TestEscape_UmountRevealsDenyRead: unmounting the deny_read overlay must not
-// reveal the file underneath — directly, or from a nested user namespace
-// (which grants fresh capabilities, but over locked mounts).
-func TestEscape_UmountRevealsDenyRead(t *testing.T) {
+// TestEscape_CantUndoTheSandbox: in every mode, the command can't take
+// apart what it runs behind. leak is what the output would show if it could.
+func TestEscape_CantUndoTheSandbox(t *testing.T) {
+	cases := []struct{ name, script, leak string }{
+		// Unmounting the deny_read overlay must not reveal the file — directly,
+		// or from a nested user namespace (fresh capabilities, locked mounts).
+		{"umount a deny_read overlay", `umount -l "$PWD/.env" 2>/dev/null; umount -l .env 2>/dev/null; cat "$PWD/.env"
+unshare -Urm sh -c 'umount -l "$0/.env" 2>/dev/null; cat "$0/.env"' "$PWD" 2>/dev/null`, "CANARY_SECRET_ENV"},
+		// A relative path must hit the same overlay as the absolute one.
+		{"read a deny_read file by relative path", "cat .env; cat ./.env", "CANARY_SECRET_ENV"},
+		{"flush the allow_net firewall", "iptables -F OUTPUT 2>/dev/null && echo FLUSHED; ip6tables -F OUTPUT 2>/dev/null && echo FLUSHED", "FLUSHED"},
+	}
 	forEachMode(t, func(t *testing.T, bin string, env []string, work string) {
-		out, _ := runSandboxedCmd(t, bin, env, work, "sh", "-c",
-			`umount -l "$PWD/.env" 2>/dev/null; umount -l .env 2>/dev/null; cat "$PWD/.env"
-unshare -Urm sh -c 'umount -l "$0/.env" 2>/dev/null; cat "$0/.env"' "$PWD" 2>/dev/null
-echo MARKER_DONE`)
-		if !strings.Contains(out, "MARKER_DONE") {
-			t.Fatalf("sandbox did not run: %s", out)
-		}
-		if strings.Contains(out, "CANARY_SECRET_ENV") {
-			t.Errorf("umount revealed a deny_read file:\n%s", out)
-		}
-	})
-}
-
-// TestEscape_RelativePathDenyRead: a relative path from the working directory
-// must hit the same deny_read overlay as the absolute one.
-func TestEscape_RelativePathDenyRead(t *testing.T) {
-	forEachMode(t, func(t *testing.T, bin string, env []string, work string) {
-		out, _ := runSandboxedCmd(t, bin, env, work, "sh", "-c", "cat .env; cat ./.env; echo MARKER_DONE")
-		if !strings.Contains(out, "MARKER_DONE") {
-			t.Fatalf("sandbox did not run: %s", out)
-		}
-		if strings.Contains(out, "CANARY_SECRET_ENV") {
-			t.Errorf("relative path read a deny_read file:\n%s", out)
-		}
-	})
-}
-
-// TestEscape_FlushAllowNet: the command must not be able to remove the
-// allow_net firewall it runs behind.
-func TestEscape_FlushAllowNet(t *testing.T) {
-	forEachMode(t, func(t *testing.T, bin string, env []string, work string) {
-		out, _ := runSandboxedCmd(t, bin, env, work, "sh", "-c",
-			"iptables -F OUTPUT 2>/dev/null && echo FLUSHED; ip6tables -F OUTPUT 2>/dev/null && echo FLUSHED6; echo MARKER_DONE")
-		if !strings.Contains(out, "MARKER_DONE") {
-			t.Fatalf("sandbox did not run: %s", out)
-		}
-		if strings.Contains(out, "FLUSHED") {
-			t.Errorf("sandboxed command flushed the firewall:\n%s", out)
+		for _, c := range cases {
+			out, _ := runSandboxedCmd(t, bin, env, work, "sh", "-c", c.script+"\necho MARKER_DONE")
+			if !strings.Contains(out, "MARKER_DONE") {
+				t.Fatalf("%s: sandbox did not run: %s", c.name, out)
+			}
+			if strings.Contains(out, c.leak) {
+				t.Errorf("could %s:\n%s", c.name, out)
+			}
 		}
 	})
 }
