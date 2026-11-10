@@ -316,6 +316,31 @@ button, input, select { font: inherit; color: inherit; }
   overflow-wrap: anywhere;
 }
 .latest-why { color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }
+.latest-what.clamp { -webkit-line-clamp: 2; line-clamp: 2; }
+.latest-why.clamp { -webkit-line-clamp: 4; line-clamp: 4; }
+
+/* Long text is cut to a few lines; .is-open on an ancestor shows it all. */
+.clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+.is-open .clamp { display: block; -webkit-line-clamp: unset; line-clamp: none; overflow: visible; }
+
+.link-btn {
+  justify-self: start;
+  min-height: 32px; /* comfortable tap target */
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: 500 12px/1.4 var(--font);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.link-btn:hover { text-decoration: underline; text-underline-offset: 3px; }
 .latest time { color: var(--text-3); font-size: 12px; }
 
 .charts {
@@ -548,6 +573,7 @@ button, input, select { font: inherit; color: inherit; }
 }
 .policy li:last-child { border-bottom: 0; }
 .policy li.muted { font-family: var(--font); }
+.policy li.list-more { border-bottom: 0; padding-top: var(--s1); font-family: var(--font); }
 
 .badge {
   min-width: 26px;

@@ -62,8 +62,8 @@ func Decisions(events []AuditEvent, f DecisionFilter) []Decision {
 		}
 		d := Decision{
 			Time: e.Time, Kind: e.Kind, Layer: LayerOf(e), Identity: e.Identity,
-			WorkDir: TildePath(e.WorkDir), What: maskSecrets(e.Command), By: e.Rule,
-			Reason: maskSecrets(e.Detail), Outcome: e.Meta["outcome"], Confidence: e.Meta["confidence"],
+			WorkDir: TildePath(e.WorkDir), What: maskSecrets(CleanAuditText(e.Command)), By: e.Rule,
+			Reason: maskSecrets(CleanAuditText(e.Detail)), Outcome: e.Meta["outcome"], Confidence: e.Meta["confidence"],
 			OSUser: e.Meta["os_user"], CallID: e.Meta["call_id"],
 		}
 		if e.Kind == "blocked" {
@@ -171,7 +171,7 @@ func TildePath(p string) string {
 
 // MaskEvent returns e with its free-text fields masked, for display.
 func MaskEvent(e AuditEvent) AuditEvent {
-	e.Command = maskSecrets(e.Command)
-	e.Detail = maskSecrets(e.Detail)
+	e.Command = maskSecrets(CleanAuditText(e.Command))
+	e.Detail = maskSecrets(CleanAuditText(e.Detail))
 	return e
 }
