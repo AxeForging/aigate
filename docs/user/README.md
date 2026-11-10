@@ -694,25 +694,20 @@ How each platform does it:
 **Linux**:
 
 ```mermaid
-flowchart TB
-    net(("internet"))
-
-    subgraph host["Your machine, set up by aigate before the command starts"]
-        slirp["slirp4netns<br/>user-mode networking<br/>DNS forwarder 10.0.2.3"]
-        setup["aigate: nsenter + iptables-restore<br/>loads the firewall from outside"]
-        hostlo["127.0.0.1 services, X11 socket<br/>unreachable"]
-    end
+flowchart LR
+    setup["aigate, before the command starts<br/>nsenter + iptables-restore"]
 
     subgraph ns["Sandbox network namespace"]
+        direction LR
         proc["agent command<br/>your uid, no capabilities"]
-        fw["firewall: OUTPUT chain<br/>1. loopback<br/>2. DNS only to 10.0.2.3<br/>3. allow_net addresses<br/>4. reject the rest"]
-        tap["tap0 10.0.2.100"]
+        fw["firewall<br/>1. loopback<br/>2. DNS only to 10.0.2.3<br/>3. allow_net addresses<br/>4. reject the rest"]
+        tap["tap0"]
         proc --> fw --> tap
     end
 
-    setup -. "installs" .-> fw
-    tap <--> slirp <--> net
-    proc -. "blocked" .-x hostlo
+    tap --> slirp["slirp4netns<br/>user-mode networking"] --> net(("internet"))
+    setup -. "loads" .-> fw
+    proc -. "no route" .-x hostlo["your 127.0.0.1 services,<br/>X11 socket"]
 ```
 
 With `allow_net` empty the firewall step is skipped, but the session still gets its own network. If `allow_net` is set and the firewall can't be installed, or `slirp4netns` is missing, the session refuses to start.
