@@ -127,6 +127,13 @@ func writeNetSetup(sb *strings.Builder, allowNet []string, ipv6Enabled bool) {
 	writeWaitForTap0(sb)
 	writeResolvConf(sb, ipv6Enabled)
 	if len(allowNet) > 0 {
+		// Debian keeps iptables in sbin; prefer the nf_tables variant (legacy
+		// needs kernel modules a normal user can't load).
+		sb.WriteString("PATH=\"$PATH:/usr/sbin:/sbin\"\n")
+		sb.WriteString("iptables() { if command -v iptables-nft >/dev/null 2>&1; then command iptables-nft \"$@\"; else command iptables \"$@\"; fi; }\n")
+		if ipv6Enabled {
+			sb.WriteString("ip6tables() { if command -v ip6tables-nft >/dev/null 2>&1; then command ip6tables-nft \"$@\"; else command ip6tables \"$@\"; fi; }\n")
+		}
 		writeIPv4Rules(sb, allowNet)
 		if ipv6Enabled {
 			writeIPv6Rules(sb, allowNet)

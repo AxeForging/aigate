@@ -249,7 +249,7 @@ func hasSlirp4netns() bool {
 
 // hasIp6tables checks whether ip6tables is available on the system.
 func hasIp6tables() bool {
-	_, err := exec.LookPath("ip6tables")
+	_, err := iptablesTool(true, "-restore")
 	return err == nil
 }
 

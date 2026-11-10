@@ -112,7 +112,7 @@ func (a *DoctorAction) setupChecks(cfg *domain.Config, err error) []services.Che
 // tool reports a binary on PATH; missing is the status when it isn't there.
 func tool(name, desc, missing, install string) services.Check {
 	c := services.Check{ID: name, Group: "Sandbox", Name: name, Status: services.StatusOK, Detail: desc}
-	if _, err := exec.LookPath(name); err != nil {
+	if _, err := services.FindTool(name); err != nil {
 		c.Status, c.Detail, c.Fix = missing, "not found — "+desc, install
 	}
 	return c

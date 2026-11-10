@@ -97,6 +97,17 @@ func resolveAllowNet(hosts []string, lookup func(string) ([]net.IP, error)) (v4,
 	return v4, v6
 }
 
+// iptablesTool finds an iptables program (tool "", "-restore"): the
+// nf_tables variant first, because the legacy one needs kernel modules a
+// normal user can't load (Fedora installs legacy as plain "iptables").
+func iptablesTool(v6 bool, tool string) (string, error) {
+	base := "iptables"
+	if v6 {
+		base = "ip6tables"
+	}
+	return FindTool(base+"-nft"+tool, base+tool)
+}
+
 // sandboxNet runs commands inside a sandbox's network namespace, with the
 // rights of the user namespace that owns it.
 type sandboxNet struct {
@@ -156,8 +167,17 @@ func configureSandboxNet(n *sandboxNet, allowNet []string, ipv6 bool, ports []in
 	}
 	v4, v6 := resolveAllowNet(allowNet, net.LookupIP)
 	filter := len(allowNet) > 0
+	restore4, err4 := iptablesTool(false, "-restore")
+	check4, _ := iptablesTool(false, "")
+	if filter && err4 != nil {
+		return firewallBlock(fmt.Errorf("%w; install iptables", err4))
+	}
 	if filter || len(ports) > 0 {
-		if err := n.run(firewallRules(false, firewallSpec{allowIPs: v4, filter: filter, ports: ports}), "iptables-restore"); err != nil {
+		err := err4
+		if err == nil {
+			err = n.run(firewallRules(false, firewallSpec{allowIPs: v4, filter: filter, ports: ports}), restore4)
+		}
+		if err != nil {
 			if filter {
 				return firewallBlock(err)
 			}
@@ -165,13 +185,17 @@ func configureSandboxNet(n *sandboxNet, allowNet []string, ipv6 bool, ports []in
 		}
 	}
 	if filter && ipv6 {
-		if err := n.run(firewallRules(true, firewallSpec{allowIPs: v6, filter: true, ports: ports}), "ip6tables-restore"); err != nil {
+		restore6, err := iptablesTool(true, "-restore")
+		if err == nil {
+			err = n.run(firewallRules(true, firewallSpec{allowIPs: v6, filter: true, ports: ports}), restore6)
+		}
+		if err != nil {
 			return firewallBlock(err)
 		}
 	}
 	if filter {
 		// Belt and braces: the final REJECT must really be there.
-		if err := n.run("", "iptables", "-C", "OUTPUT", "-j", "REJECT", "--reject-with", "icmp-admin-prohibited"); err != nil {
+		if err := n.run("", check4, "-C", "OUTPUT", "-j", "REJECT", "--reject-with", "icmp-admin-prohibited"); err != nil {
 			return firewallBlock(err)
 		}
 	}

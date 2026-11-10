@@ -307,17 +307,27 @@ print("MARKER_DONE")`
 }
 
 // TestEscape_AllowNetFailsClosedWithoutFirewall: if the firewall can't be
-// installed (here: no iptables), the command must not run unfiltered.
+// installed (here: every iptables program fails), the command must not run
+// unfiltered.
 func TestEscape_AllowNetFailsClosedWithoutFirewall(t *testing.T) {
 	forEachMode(t, func(t *testing.T, bin string, env []string, work string) {
 		if !strings.HasSuffix(t.Name(), "allow_net") {
 			t.Skip("no allow_net in this mode")
 		}
-		hide := []string{"iptables", "ip6tables"}
-		if strings.Contains(t.Name(), "unshare") {
-			hide = append(hide, "bwrap")
+		broken := t.TempDir()
+		for _, n := range []string{"iptables", "iptables-nft", "iptables-restore", "iptables-nft-restore",
+			"ip6tables", "ip6tables-nft", "ip6tables-restore", "ip6tables-nft-restore"} {
+			if err := os.WriteFile(filepath.Join(broken, n), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
 		}
-		env = append(env, "PATH="+pathWithout(t, hide...))
+		path := os.Getenv("PATH")
+		for _, kv := range env {
+			if strings.HasPrefix(kv, "PATH=") {
+				path = strings.TrimPrefix(kv, "PATH=")
+			}
+		}
+		env = append(env, "PATH="+broken+":"+path)
 		out, err := runSandboxedCmd(t, bin, env, work, "sh", "-c", "echo COMMAND_RAN")
 		if strings.Contains(out, "AppArmor is blocking") {
 			t.Skip("AppArmor allows bwrap only at its installed path; can't hide iptables here")
