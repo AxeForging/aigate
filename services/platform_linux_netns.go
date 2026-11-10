@@ -159,11 +159,7 @@ func (n *sandboxNet) run(stdin, name string, args ...string) error {
 // never silently go unenforced.
 func configureSandboxNet(n *sandboxNet, allowNet []string, ipv6 bool, ports []int) error {
 	firewallBlock := func(err error) error {
-		return fmt.Errorf("%w (%v)", Block{
-			What: "this run", Layer: LayerSandbox,
-			Reason: "the allow_net firewall could not be set up inside the sandbox",
-			Fix:    "run aigate doctor to see what's missing",
-		}, err)
+		return fmt.Errorf("%w (%v)", firewallSetupBlock(err), err)
 	}
 	v4, v6 := resolveAllowNet(allowNet, net.LookupIP)
 	filter := len(allowNet) > 0
@@ -226,4 +222,19 @@ func resolvConfArgs(ipv6 bool, tmpFiles *[]string) ([]string, error) {
 	}
 	*tmpFiles = append(*tmpFiles, path)
 	return []string{"--ro-bind", path, target}, nil
+}
+
+// firewallSetupBlock explains a firewall that couldn't be installed, with
+// the specific fix when the cause is known.
+func firewallSetupBlock(err error) Block {
+	fix := "run aigate doctor to see what's missing"
+	if msg := err.Error(); strings.Contains(msg, "(legacy)") || strings.Contains(msg, "modprobe") {
+		// Legacy iptables needs kernel modules a normal user can't load.
+		fix = "install the nf_tables iptables: sudo dnf install iptables-nft (Debian/Ubuntu: sudo apt install iptables)"
+	}
+	return Block{
+		What: "this run", Layer: LayerSandbox,
+		Reason: "the allow_net firewall could not be set up inside the sandbox",
+		Fix:    fix,
+	}
 }

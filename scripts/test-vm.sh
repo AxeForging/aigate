@@ -50,6 +50,8 @@ image_info() {
 packages() {
 	case $1 in
 	arch) echo "bubblewrap slirp4netns acl git python iptables-nft" ;;
+	# Fedora desktops ship the nf_tables iptables; the cloud image only has legacy.
+	fedora-*) echo "bubblewrap slirp4netns acl git python3 iptables-nft" ;;
 	*) echo "bubblewrap slirp4netns acl git python3 iptables" ;;
 	esac
 }

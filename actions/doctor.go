@@ -206,9 +206,15 @@ func (a *DoctorAction) firewallCheck() services.Check {
 	var out bytes.Buffer
 	profile := domain.SandboxProfile{WorkDir: wd, Config: domain.Config{AllowNet: []string{"127.0.0.1"}}}
 	if err := a.platform.RunSandboxed(profile, "true", nil, &out, &out); err != nil {
+		msg := strings.TrimSpace(firstLine(err.Error() + " " + out.String()))
 		c.Status = services.StatusFail
-		c.Detail = "sessions with allow_net won't start: " + strings.TrimSpace(firstLine(err.Error()+" "+out.String()))
+		c.Detail = "sessions with allow_net won't start: " + msg
 		c.Fix = "aigate doctor --report   # and open an issue with it; meanwhile: aigate deny net HOST to run without allow_net"
+		// Prefer the specific fix the block message names.
+		if _, fix, ok := strings.Cut(msg, "To allow: "); ok && !strings.HasPrefix(fix, "run aigate doctor") {
+			fix, _, _ = strings.Cut(fix, " (")
+			c.Fix = fix
+		}
 	}
 	return c
 }

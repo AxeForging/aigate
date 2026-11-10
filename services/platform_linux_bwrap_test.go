@@ -929,3 +929,14 @@ func TestRunSandboxed_AllowNetWithoutSlirpFailsClosed(t *testing.T) {
 		t.Error("nothing may run when allow_net can't be enforced")
 	}
 }
+
+func TestFirewallSetupBlock_NamesTheFix(t *testing.T) {
+	legacy := fmt.Errorf("iptables-restore v1.8.11 (legacy): unable to initialize table 'filter'")
+	if got := firewallSetupBlock(legacy).String(); !strings.Contains(got, "sudo dnf install iptables-nft") {
+		t.Errorf("legacy iptables should point at iptables-nft, got: %s", got)
+	}
+	other := fmt.Errorf("nsenter: failed")
+	if got := firewallSetupBlock(other).String(); !strings.Contains(got, "aigate doctor") || !strings.Contains(got, "allow_net firewall") {
+		t.Errorf("unknown cause should point at doctor, got: %s", got)
+	}
+}
