@@ -364,8 +364,9 @@ mask_stdout:
 | `npm` | `npm_...` tokens | `npm_***` |
 | `huggingface` | `hf_...` tokens | `hf_***` |
 
-All presets are on by default for new configs (`aigate init`). An existing
-config keeps its list — add the new names under `mask_stdout.presets`.
+All presets are on by default for new configs (`aigate init`). A config
+from an older aigate keeps its list; `aigate doctor` names the formats it
+misses and `aigate init --upgrade` adds them (your other rules stay).
 Lines are pre-checked for each preset's prefix, so more presets cost almost
 nothing (~15 MB/s through all 13 on a laptop; agents print KB/s).
 

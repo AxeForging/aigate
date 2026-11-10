@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/AxeForging/aigate/domain"
 	"github.com/AxeForging/aigate/helpers"
@@ -267,4 +268,16 @@ func appendUnique(base, extra []string) []string {
 		}
 	}
 	return base
+}
+
+// MissingDefaultPresets lists the default mask presets cfg doesn't enable,
+// in default order: a config written by an older aigate misses newer ones.
+func (s *ConfigService) MissingDefaultPresets(cfg *domain.Config) []string {
+	var missing []string
+	for _, p := range s.InitDefaultConfig().MaskStdout.Presets {
+		if !slices.Contains(cfg.MaskStdout.Presets, p) {
+			missing = append(missing, p)
+		}
+	}
+	return missing
 }

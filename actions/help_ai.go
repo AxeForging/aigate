@@ -24,6 +24,7 @@ SETUP (one-time)
   sudo aigate setup              # Create OS group "ai-agents" and user "ai-runner"
   aigate init                    # Create default config at ~/.aigate/config.yaml
   aigate init --force            # Re-create config (overwrites existing)
+  aigate init --upgrade          # Add newer default protections, keep your rules
   aigate doctor                  # Check prerequisites and active isolation mode
 
 FILE RESTRICTIONS (deny read)
@@ -213,7 +214,7 @@ OUTPUT MASKING (mask_stdout)
     huggingface hf_...                         → hf_***
 
   All 13 presets are enabled by default for new configs (aigate init). Older
-  configs keep their list: add the new names under mask_stdout.presets.
+  configs keep their list: aigate init --upgrade adds the missing ones.
 
   Pattern options:
     regex            RE2-compatible regular expression (required)

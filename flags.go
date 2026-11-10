@@ -50,6 +50,11 @@ var portFlag = cli.StringSliceFlag{
 	Usage: "Make a server started inside reachable at localhost:PORT on your machine (repeatable), e.g. --port 3000",
 }
 
+var upgradeFlag = cli.BoolFlag{
+	Name:  "upgrade",
+	Usage: "Add protections that are new in this aigate version to your existing config (your own rules stay)",
+}
+
 var identityFlag = cli.StringFlag{
 	Name:  "identity, i",
 	Usage: "Run as this identity (see: aigate identity list). Default: the identity bound to this folder, then default_identity",

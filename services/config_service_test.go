@@ -3,6 +3,7 @@ package services
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/AxeForging/aigate/domain"
@@ -269,5 +270,29 @@ func TestInitDefaultConfig_SubcommandExamples(t *testing.T) {
 		if !found {
 			t.Errorf("DenyExec missing full command %q", want)
 		}
+	}
+}
+
+func TestMissingDefaultPresets(t *testing.T) {
+	svc := NewConfigService()
+	all := svc.InitDefaultConfig().MaskStdout.Presets
+	cases := []struct {
+		name    string
+		presets []string
+		want    []string
+	}{
+		{"older config misses newer presets, in default order", []string{"github", "openai", "anthropic", "aws_key", "aws_secret", "bearer"},
+			[]string{"cloudflare", "gitlab", "slack", "stripe", "google", "npm", "huggingface"}},
+		{"up to date", all, nil},
+		{"own extra presets don't count", append(append([]string{}, all...), "custom"), nil},
+		{"none enabled at all", nil, all},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := &domain.Config{MaskStdout: domain.MaskStdout{Presets: c.presets}}
+			if got := svc.MissingDefaultPresets(cfg); !slices.Equal(got, c.want) {
+				t.Errorf("got %v, want %v", got, c.want)
+			}
+		})
 	}
 }
