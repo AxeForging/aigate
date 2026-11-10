@@ -33,60 +33,45 @@ func (m *mockPlatform) RunSandboxed(_ domain.SandboxProfile, cmd string, args []
 	return m.runSandboxedErr
 }
 
-func TestRunnerService_BlockedCommand(t *testing.T) {
-	mock := &mockPlatform{}
-	svc := NewRunnerService(mock)
-	profile := domain.SandboxProfile{
-		Config: domain.Config{
-			DenyExec: []string{"curl", "wget"},
-		},
+// TestRunnerService_DenyExec: deny_exec stops a command before any sandbox
+// starts — by name, by full path, or by subcommand anywhere in the args —
+// and lets everything else through to the sandbox unchanged.
+func TestRunnerService_DenyExec(t *testing.T) {
+	cases := []struct {
+		name    string
+		deny    []string
+		cmd     string
+		args    []string
+		blocked bool
+	}{
+		{"denied command", []string{"curl", "wget"}, "curl", []string{"-s", "http://example.com"}, true},
+		{"denied command by full path", []string{"curl"}, "/usr/bin/curl", []string{"-s", "http://example.com"}, true},
+		{"other command allowed", []string{"curl", "wget"}, "go", []string{"build", "."}, false},
+		{"denied subcommand", []string{"kubectl delete"}, "kubectl", []string{"delete", "pod", "my-pod"}, true},
+		{"denied subcommand after flags", []string{"kubectl delete"}, "kubectl", []string{"-n", "default", "delete", "pod", "my-pod"}, true},
+		{"other subcommand allowed", []string{"kubectl delete"}, "kubectl", []string{"get", "pods"}, false},
+		{"whole command denied covers every subcommand", []string{"kubectl"}, "kubectl", []string{"get", "pods"}, true},
 	}
-
-	err := svc.Run(profile, "curl", []string{"-s", "http://example.com"})
-	if err == nil {
-		t.Fatal("Run() should error for blocked command")
-	}
-	if !errors.Is(err, helpers.ErrCommandBlocked) {
-		t.Errorf("Run() error = %v, want ErrCommandBlocked", err)
-	}
-	if mock.runSandboxedCalled {
-		t.Error("RunSandboxed should not be called for blocked command")
-	}
-}
-
-func TestRunnerService_AllowedCommand(t *testing.T) {
-	mock := &mockPlatform{}
-	svc := NewRunnerService(mock)
-	profile := domain.SandboxProfile{
-		Config: domain.Config{
-			DenyExec: []string{"curl", "wget"},
-		},
-	}
-
-	err := svc.Run(profile, "go", []string{"build", "."})
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if !mock.runSandboxedCalled {
-		t.Error("RunSandboxed should be called for allowed command")
-	}
-	if mock.runSandboxedCmd != "go" {
-		t.Errorf("RunSandboxed cmd = %q, want %q", mock.runSandboxedCmd, "go")
-	}
-}
-
-func TestRunnerService_BlockedByPath(t *testing.T) {
-	mock := &mockPlatform{}
-	svc := NewRunnerService(mock)
-	profile := domain.SandboxProfile{
-		Config: domain.Config{
-			DenyExec: []string{"curl"},
-		},
-	}
-
-	err := svc.Run(profile, "/usr/bin/curl", []string{"-s", "http://example.com"})
-	if err == nil {
-		t.Fatal("Run() should block /usr/bin/curl when 'curl' is denied")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mock := &mockPlatform{}
+			err := NewRunnerService(mock).Run(domain.SandboxProfile{Config: domain.Config{DenyExec: c.deny}}, c.cmd, c.args)
+			if c.blocked {
+				if !errors.Is(err, helpers.ErrCommandBlocked) {
+					t.Errorf("Run() error = %v, want ErrCommandBlocked", err)
+				}
+				if mock.runSandboxedCalled {
+					t.Error("a blocked command must not reach the sandbox")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if !mock.runSandboxedCalled || mock.runSandboxedCmd != c.cmd {
+				t.Errorf("sandbox should run %q, got called=%v cmd=%q", c.cmd, mock.runSandboxedCalled, mock.runSandboxedCmd)
+			}
+		})
 	}
 }
 
@@ -100,80 +85,5 @@ func TestRunnerService_SandboxError(t *testing.T) {
 	err := svc.Run(profile, "echo", []string{"hello"})
 	if err == nil {
 		t.Fatal("Run() should propagate sandbox errors")
-	}
-}
-
-func TestRunnerService_BlockedSubcommand(t *testing.T) {
-	mock := &mockPlatform{}
-	svc := NewRunnerService(mock)
-	profile := domain.SandboxProfile{
-		Config: domain.Config{
-			DenyExec: []string{"kubectl delete"},
-		},
-	}
-
-	err := svc.Run(profile, "kubectl", []string{"delete", "pod", "my-pod"})
-	if err == nil {
-		t.Fatal("Run() should block kubectl delete")
-	}
-	if !errors.Is(err, helpers.ErrCommandBlocked) {
-		t.Errorf("Run() error = %v, want ErrCommandBlocked", err)
-	}
-	if mock.runSandboxedCalled {
-		t.Error("RunSandboxed should not be called for blocked subcommand")
-	}
-}
-
-func TestRunnerService_AllowedSubcommand(t *testing.T) {
-	mock := &mockPlatform{}
-	svc := NewRunnerService(mock)
-	profile := domain.SandboxProfile{
-		Config: domain.Config{
-			DenyExec: []string{"kubectl delete"},
-		},
-	}
-
-	err := svc.Run(profile, "kubectl", []string{"get", "pods"})
-	if err != nil {
-		t.Fatalf("Run() error = %v, want nil for allowed subcommand", err)
-	}
-	if !mock.runSandboxedCalled {
-		t.Error("RunSandboxed should be called for allowed subcommand")
-	}
-}
-
-func TestRunnerService_SubcommandInMiddleOfArgs(t *testing.T) {
-	mock := &mockPlatform{}
-	svc := NewRunnerService(mock)
-	profile := domain.SandboxProfile{
-		Config: domain.Config{
-			DenyExec: []string{"kubectl delete"},
-		},
-	}
-
-	err := svc.Run(profile, "kubectl", []string{"-n", "default", "delete", "pod", "my-pod"})
-	if err == nil {
-		t.Fatal("Run() should block kubectl delete even when subcommand is in middle of args")
-	}
-	if !errors.Is(err, helpers.ErrCommandBlocked) {
-		t.Errorf("Run() error = %v, want ErrCommandBlocked", err)
-	}
-}
-
-func TestRunnerService_FullCommandBlockStillWorks(t *testing.T) {
-	mock := &mockPlatform{}
-	svc := NewRunnerService(mock)
-	profile := domain.SandboxProfile{
-		Config: domain.Config{
-			DenyExec: []string{"kubectl"},
-		},
-	}
-
-	err := svc.Run(profile, "kubectl", []string{"get", "pods"})
-	if err == nil {
-		t.Fatal("Run() should block all kubectl usage when full command is denied")
-	}
-	if !errors.Is(err, helpers.ErrCommandBlocked) {
-		t.Errorf("Run() error = %v, want ErrCommandBlocked", err)
 	}
 }
