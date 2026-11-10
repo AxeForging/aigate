@@ -49,7 +49,7 @@ image_info() {
 # packages DISTRO -> sandbox tools + what the tests use
 packages() {
 	case $1 in
-	arch) echo "bubblewrap slirp4netns acl git python iptables-nft" ;;
+	arch) echo "bubblewrap slirp4netns acl git python" ;; # iptables comes with the image; iptables-nft conflicts with it
 	# Fedora desktops ship the nf_tables iptables; the cloud image only has legacy.
 	fedora-*) echo "bubblewrap slirp4netns acl git python3 iptables-nft" ;;
 	*) echo "bubblewrap slirp4netns acl git python3 iptables" ;;
@@ -138,6 +138,17 @@ run_one() {
 	ssh-keygen -q -t ed25519 -N '' -f "$work/key"
 	key=$(cat "$work/key.pub")
 	pkgs=$(packages "$distro")
+	# Arch is rolling: installing onto an older image needs a full upgrade
+	# (pacman -Sy alone fails once the image falls behind), but not of the
+	# kernel: the VM keeps running the old one, whose modules (nf_tables)
+	# an upgrade would delete.
+	if [[ $distro == arch ]]; then
+		install="runcmd:
+  - [pacman, -Syu, --noconfirm, --ignore, linux, ${pkgs// /, }]"
+	else
+		install="package_update: true
+packages: [${pkgs// /, }]"
+	fi
 	cat >"$work/user-data" <<EOF
 #cloud-config
 users:
@@ -145,8 +156,7 @@ users:
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
     ssh_authorized_keys: [$key]
-package_update: true
-packages: [${pkgs// /, }]
+$install
 EOF
 	printf 'instance-id: aigate-%s\nlocal-hostname: aigate-test\n' "$distro" >"$work/meta-data"
 	genisoimage -quiet -output "$work/seed.iso" -volid cidata -joliet -rock "$work/user-data" "$work/meta-data"
@@ -169,7 +179,11 @@ EOF
 	ssh "${ssh_opts[@]}" tester@127.0.0.1 true || { cp "$work/console.log" "$log"; die "$distro: VM never became reachable (console in $log)"; }
 	# cloud-init exits 2 for recoverable warnings; packages are what matter.
 	ssh "${ssh_opts[@]}" tester@127.0.0.1 'sudo cloud-init status --wait >/dev/null; command -v bwrap >/dev/null' ||
-		{ echo "$distro: packages missing after cloud-init" >"$log"; die "$distro: bwrap not installed"; }
+		{
+			echo "$distro: packages missing after cloud-init" >"$log"
+			ssh "${ssh_opts[@]}" tester@127.0.0.1 'sudo cloud-init status --long; sudo grep -iE "package|pacman|error|fail" /var/log/cloud-init.log | tail -n 25' >>"$log" 2>&1 || true
+			die "$distro: bwrap not installed (see $log)"
+		}
 	scp -q -r -P "$port" -i "$work/key" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
 		"$work/payload" tester@127.0.0.1:
 	ssh "${ssh_opts[@]}" tester@127.0.0.1 "bash -s" <<<"$GUEST_SCRIPT" >"$log" 2>&1 || rc=$?

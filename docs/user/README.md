@@ -647,7 +647,7 @@ Two layers working together for defense-in-depth:
    - **Linux**: POSIX ACLs via `setfacl` deny the `ai-agents` group read access
    - **macOS**: Extended ACLs via `chmod +a` with explicit deny entries
 2. **Runtime overrides** (applied when you run `aigate run`):
-   - **Linux**: Mount namespaces overmount directories with empty tmpfs, files with `/dev/null`
+   - **Linux**: Mount namespaces overmount directories with empty tmpfs, files with a "blocked" note. Matching files that appear while a session runs (an env pulled in another terminal, an editor saving `.env` by renaming a temp file over it) are hidden too: aigate watches the folders the rules point at and covers new matches from outside the sandbox within milliseconds. This needs `slirp4netns` (the usual setup); without it only files present at start are hidden. Rules apply at the top of the working folder (`.env`, `*.pem`), not in subfolders.
    - **macOS**: Seatbelt `file-read*` deny rules in the sandbox profile
 
 ```mermaid

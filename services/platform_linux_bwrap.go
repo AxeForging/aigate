@@ -178,6 +178,15 @@ func (p *LinuxPlatform) buildBwrapArgs(profile domain.SandboxProfile, tmpFiles *
 	// For files with hardlinks, also deny all alternate paths in the workdir
 	// that share the same inode (hardlinks bypass path-based bind mounts).
 	denyMarkerPath := ""
+	if len(profile.Config.DenyRead) > 0 {
+		// Also at a fixed path: files that appear later are covered with it
+		// from outside (see platform_linux_denywatch.go).
+		if denyMarkerPath, err = writeTmpFile("aigate-denied-*", DenyReadMarker()); err != nil {
+			return nil, fmt.Errorf("write deny marker: %w", err)
+		}
+		*tmpFiles = append(*tmpFiles, denyMarkerPath)
+		args = append(args, "--ro-bind", denyMarkerPath, sandboxDenyMarker)
+	}
 	for _, pattern := range profile.Config.DenyRead {
 		paths, _ := resolvePatterns([]string{pattern}, profile.WorkDir)
 		for _, path := range paths {
@@ -189,14 +198,6 @@ func (p *LinuxPlatform) buildBwrapArgs(profile domain.SandboxProfile, tmpFiles *
 			if info.IsDir() {
 				args = append(args, "--tmpfs", path)
 			} else {
-				if denyMarkerPath == "" {
-					denyMsg := DenyReadMarker()
-					denyMarkerPath, err = writeTmpFile("aigate-denied-*", denyMsg)
-					if err != nil {
-						return nil, fmt.Errorf("write deny marker: %w", err)
-					}
-					*tmpFiles = append(*tmpFiles, denyMarkerPath)
-				}
 				args = append(args, "--bind", denyMarkerPath, path)
 
 				// Deny hardlinks: find all paths in the workdir that share the
@@ -305,6 +306,7 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 		}
 	}()
 
+	knownDenied := denyMatchesNow(profile) // before planning mounts: see startLateDenyGuard
 	bwrapArgs, err := p.buildBwrapArgs(profile, &tmpFiles)
 	if err != nil {
 		return fmt.Errorf("failed to build bwrap args: %w", err)
@@ -375,6 +377,7 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 		return abort(fmt.Errorf("bwrap info-fd: %w", err))
 	}
 
+	waitLoopback(childPID, 2*time.Second)
 	sandboxNet, err := openSandboxNet(childPID)
 	if err != nil {
 		return abort(fmt.Errorf("sandbox network: %w", err))
@@ -392,6 +395,8 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 	if apiSocket != "" {
 		publishPorts(apiSocket, profile.Ports)
 	}
+	stopGuard := startLateDenyGuard(childPID, profile, knownDenied)
+	defer stopGuard()
 	if _, err := blockW.Write([]byte{1}); err != nil { // network ready: run the command
 		return abort(fmt.Errorf("start command: %w", err))
 	}
@@ -437,6 +442,32 @@ func (p *LinuxPlatform) runWithBwrapNetFilter(profile domain.SandboxProfile, cmd
 		helpers.Log.Debug().Str("slirp4netns", slirp.String()).Msg("network helper output")
 	}
 	return bwrapErr
+}
+
+// waitLoopback waits until bwrap has brought up the sandbox's loopback.
+// slirp4netns --configure also brings lo up; both at once intermittently
+// fails bwrap with "loopback: Failed RTM_NEWADDR" on slower machines.
+// Gives up quietly after timeout: slirp's own setup still applies.
+func waitLoopback(pid int, timeout time.Duration) {
+	path := fmt.Sprintf("/proc/%d/net/fib_trie", pid)
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if b, err := os.ReadFile(path); err == nil && loopbackUp(string(b)) {
+			return
+		}
+	}
+	helpers.Log.Debug().Int("pid", pid).Msg("sandbox loopback not seen up; starting slirp4netns anyway")
+}
+
+// loopbackUp reports whether fib_trie has 127.0.0.1 as a local address,
+// which the kernel adds once lo has the address and is up.
+func loopbackUp(fibTrie string) bool {
+	lines := strings.Split(fibTrie, "\n")
+	for i, l := range lines {
+		if strings.TrimSpace(l) == "|-- 127.0.0.1" && i+1 < len(lines) && strings.Contains(lines[i+1], "/32 host LOCAL") {
+			return true
+		}
+	}
+	return false
 }
 
 // startSlirp attaches slirp4netns to the sandbox's network namespace and

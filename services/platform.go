@@ -100,22 +100,31 @@ func underAny(path string, roots []string) bool {
 	return false
 }
 
+// absPatternOf makes a pattern absolute: ~/ is the home directory, a
+// relative pattern is relative to workDir. Glob characters are kept.
+func absPatternOf(pattern, workDir string) (string, error) {
+	switch {
+	case strings.HasPrefix(pattern, "~/"):
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve home directory for %q: %w", pattern, err)
+		}
+		return filepath.Join(home, pattern[2:]), nil
+	case filepath.IsAbs(pattern):
+		return pattern, nil
+	default:
+		return filepath.Join(workDir, pattern), nil
+	}
+}
+
 // resolvePatterns expands glob patterns relative to workDir into absolute paths.
 // Patterns starting with ~/ are expanded to the user's home directory.
 func resolvePatterns(patterns []string, workDir string) ([]string, error) {
 	var resolved []string
 	for _, pattern := range patterns {
-		var absPattern string
-		if strings.HasPrefix(pattern, "~/") {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return nil, fmt.Errorf("failed to resolve home directory for %q: %w", pattern, err)
-			}
-			absPattern = filepath.Join(home, pattern[2:])
-		} else if filepath.IsAbs(pattern) {
-			absPattern = pattern
-		} else {
-			absPattern = filepath.Join(workDir, pattern)
+		absPattern, err := absPatternOf(pattern, workDir)
+		if err != nil {
+			return nil, err
 		}
 		matches, err := filepath.Glob(absPattern)
 		if err != nil {
