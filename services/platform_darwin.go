@@ -329,8 +329,14 @@ func generateSeatbeltProfile(profile domain.SandboxProfile) string {
 		}
 		// Full command block: find all instances via PATH
 		if path, err := exec.LookPath(entry); err == nil {
-			fmt.Fprintf(&sb, "(deny process-exec (literal %q))\n", path)
+			fmt.Fprintf(&sb, "(deny process-exec (literal %q))\n", realPath(path))
 		}
+	}
+
+	// ssh-agent: its socket would let the agent sign with the user's keys.
+	// The env vars are removed too (darwinAgentEnvVars).
+	if sock := os.Getenv("SSH_AUTH_SOCK"); filepath.IsAbs(sock) {
+		fmt.Fprintf(&sb, "(deny network-outbound (remote unix-socket (path-literal %q)))\n", realPath(sock))
 	}
 
 	// Network restrictions
@@ -354,13 +360,15 @@ func realPath(p string) string {
 	return p
 }
 
-// identityEnvCommand returns "/usr/bin/env -u X … K=V …" for an identity, or
-// nothing when no identity is active.
+// darwinAgentEnvVars point at agents holding the user's keys; every session
+// runs without them.
+var darwinAgentEnvVars = []string{"SSH_AUTH_SOCK", "SSH_AGENT_PID", "GPG_AGENT_INFO"}
+
+// identityEnvCommand returns "/usr/bin/env -u X … K=V …": the agent sockets'
+// vars removed, plus the identity's env when one is active.
 func identityEnvCommand(profile domain.SandboxProfile) []string {
 	set, unset := sessionEnv(profile, profile.JudgeSocket) // /tmp is shared on macOS
-	if len(set) == 0 && len(unset) == 0 {
-		return nil
-	}
+	unset = append(unset, darwinAgentEnvVars...)
 	args := []string{"/usr/bin/env"}
 	for _, v := range unset {
 		args = append(args, "-u", v)

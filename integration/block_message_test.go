@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -35,16 +36,33 @@ func TestBlockMessages_Uniform(t *testing.T) {
 		out, _ := cmd.CombinedOutput()
 		return string(out)
 	}
+	// macOS (Seatbelt) denies with the system's own "Operation not
+	// permitted" and can't block subcommands inside the sandbox (the pre-run
+	// check still does); see the user guide.
+	darwin := runtime.GOOS == "darwin"
 	tests := []struct {
 		name, out, what, fix string
+		darwin               string // on macOS: "native" = OS denial, "skip" = not enforced inside
 	}{
-		{"denied file", run("sh", "-c", "cat secret.env"), "read of this file", "aigate allow read"},
-		{"denied command inside", run("sh", "-c", "blocked-tool; true"), "exec blocked-tool", "aigate allow exec blocked-tool"},
-		{"denied subcommand inside", run("sh", "-c", tool+" rm x; true"), "fake-tool rm", "aigate allow exec '" + tool + " rm'"},
-		{"pre-run refusal", run("blocked-tool"), "exec blocked-tool", "aigate allow exec blocked-tool"},
+		{"denied file", run("sh", "-c", "cat secret.env"), "read of this file", "aigate allow read", "native"},
+		{"denied command inside", run("sh", "-c", "blocked-tool; true"), "exec blocked-tool", "aigate allow exec blocked-tool", "native"},
+		{"denied subcommand inside", run("sh", "-c", tool+" rm x; true"), "fake-tool rm", "aigate allow exec '" + tool + " rm'", "skip"},
+		{"pre-run refusal", run("blocked-tool"), "exec blocked-tool", "aigate allow exec blocked-tool", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if darwin && tt.darwin == "skip" {
+				t.Skip("macOS: subcommands are only blocked by the pre-run check")
+			}
+			if darwin && tt.darwin == "native" {
+				if !strings.Contains(tt.out, "Operation not permitted") {
+					t.Errorf("want Seatbelt's denial in:\n%s", tt.out)
+				}
+				if strings.Contains(tt.out, "canary-secret-value") || strings.Contains(tt.out, "SHOULD_NOT_RUN") {
+					t.Errorf("blocked action went through:\n%s", tt.out)
+				}
+				return
+			}
 			m := uniformBlock.FindStringSubmatch(tt.out)
 			if m == nil {
 				t.Fatalf("no uniform block message in:\n%s", tt.out)

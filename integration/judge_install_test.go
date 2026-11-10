@@ -37,11 +37,13 @@ func countOurs(t *testing.T, settings, bin string) map[string]int {
 	if err := json.Unmarshal(b, &doc); err != nil {
 		t.Fatalf("settings not JSON: %v\n%s", err, b)
 	}
+	// The hook names the binary's resolved path (/private/var/… on macOS).
+	real, _ := filepath.EvalSymlinks(bin)
 	n := map[string]int{}
 	for ev, groups := range doc.Hooks {
 		for _, g := range groups {
 			for _, h := range g.Hooks {
-				if h.Command == bin+" judge" {
+				if h.Command == bin+" judge" || h.Command == real+" judge" {
 					n[ev]++
 				}
 			}
