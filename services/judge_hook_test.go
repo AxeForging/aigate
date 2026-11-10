@@ -53,3 +53,40 @@ func TestHookOutput_NeverAllows(t *testing.T) {
 		}
 	}
 }
+
+// TestHookOutput_AskVsDenyWording: an ask shows a Yes/No prompt, so its
+// message says to answer it there; only a deny is "blocked" and points at
+// allow-once.
+func TestHookOutput_AskVsDenyWording(t *testing.T) {
+	call := Call{Event: EventPreTool, Tool: "Bash", Target: "git push --force origin main"}
+	reason := func(o Outcome) string {
+		var out struct {
+			H struct {
+				Decision string `json:"permissionDecision"`
+				Reason   string `json:"permissionDecisionReason"`
+			} `json:"hookSpecificOutput"`
+		}
+		raw := HookOutput(call, Verdict{Outcome: o, Judge: "clef", Reason: "clef judged this unsafe (risk 0.39)"}, JudgeFix(call))
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("%s: %v\n%s", o, err, raw)
+		}
+		return out.H.Reason
+	}
+	ask := reason(Ask)
+	for _, want := range []string{"[aigate] judge wants your OK", "Bash git push --force origin main", "clef judged this unsafe", "Answer Yes"} {
+		if !strings.Contains(ask, want) {
+			t.Errorf("ask message missing %q: %s", want, ask)
+		}
+	}
+	for _, bad := range []string{"blocked", "allow-once"} {
+		if strings.Contains(ask, bad) {
+			t.Errorf("ask message should not say %q: %s", bad, ask)
+		}
+	}
+	deny := reason(Deny)
+	for _, want := range []string{"[aigate] blocked Bash git push", "allow-once"} {
+		if !strings.Contains(deny, want) {
+			t.Errorf("deny message missing %q: %s", want, deny)
+		}
+	}
+}
